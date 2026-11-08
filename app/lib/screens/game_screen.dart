@@ -127,7 +127,7 @@ class _GameViewState extends State<_GameView> {
                 child: const Text('Reconnexion…',
                     textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w700)),
               ),
-            Expanded(child: GameWidget(game: _game)),
+            Expanded(child: RepaintBoundary(child: GameWidget(game: _game))),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
               child: Row(

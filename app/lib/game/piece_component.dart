@@ -30,10 +30,14 @@ abstract class PieceComponent extends PositionComponent {
   bool frozen = false;
   bool selected = false;
 
+  /// Roi en échec (aura rouge clignotante + vibration).
+  bool inCheck = false;
+
   /// Rayon de base (pixels) du pion à l'endroit où il se trouve (tient compte de la perspective).
   double radius = 10;
 
-  static const moveDuration = 0.3;
+  /// Durée du déplacement (s) ; surchargée par les guerriers (350-450 ms).
+  double get moveDuration => 0.3;
   Vector2? _from;
   Vector2? _to;
   double _fromRadius = 10;
@@ -41,6 +45,9 @@ abstract class PieceComponent extends PositionComponent {
   double _t = 0;
 
   bool get isMoving => _to != null;
+
+  /// Progression du déplacement (0..1).
+  double get moveProgress => _t;
 
   /// Place la pièce sans animation.
   void placeAt(Vector2 p, double r) {
@@ -77,6 +84,13 @@ abstract class PieceComponent extends PositionComponent {
 
   /// Appelé quand la pièce est prise (avant son retrait).
   void onCaptured() {}
+
+  /// Déroule l'attaque spéciale de la pièce (pose) vers la direction [dir] ; ignoré par défaut.
+  void startAttack(Vector2 dir) {}
+  void endAttack() {}
+
+  /// Impact subi (flash blanc).
+  void hit() {}
 
   /// Dessin de la pièce dans un carré [size] centré sur la case.
   void renderPiece(ui.Canvas canvas, Vector2 size);

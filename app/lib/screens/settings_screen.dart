@@ -6,6 +6,7 @@ import '../services/api.dart';
 import '../services/sound_service.dart';
 import '../state/app_state.dart';
 import '../widgets/common.dart';
+import 'gallery_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -118,6 +119,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   BigButton(label: 'Tester la connexion', secondary: true, onPressed: _test),
                   const SizedBox(height: 14),
                   BigButton(label: 'Enregistrer', icon: Icons.save, onPressed: _save),
+                  const SizedBox(height: 14),
+                  BigButton(
+                    label: 'Galerie des guerriers',
+                    icon: Icons.auto_awesome,
+                    secondary: true,
+                    onPressed: () => Navigator.of(context)
+                        .push(MaterialPageRoute<void>(builder: (_) => const GalleryScreen())),
+                  ),
                 ],
               ),
             ),

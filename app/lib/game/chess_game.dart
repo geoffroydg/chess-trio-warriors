@@ -8,19 +8,27 @@ import 'package:flutter/painting.dart' show Color, Offset, Path, Canvas, Paint, 
 
 import '../models/geometry.dart';
 import '../models/protocol.dart';
+import 'arena_backdrop.dart';
+import 'attacks.dart';
+import 'fx.dart';
 import 'piece_component.dart';
+import 'warrior_piece.dart';
 
 /// Jeu Flame : plateau hexagonal en vue 2D inclinée, pièces, sélection et animations.
-class ChessGame extends FlameGame {
+class ChessGame extends FlameGame with FxHost {
   ChessGame({
     required this.geometry,
     required this.viewer,
     PieceFactory? pieceFactory,
     this.onMove,
     this.onSelect,
+    this.onMoveEvent,
+    this.onCapture,
+    this.onCheck,
+    this.onMate,
   })  : projection = BoardProjection(viewer: viewer),
         pieceFactory = pieceFactory ??
-            ((t, o, c) => PlaceholderPieceComponent(type: t, owner: o, cellId: c));
+            warriorFactory;
 
   final BoardGeometry geometry;
   final int viewer;
@@ -30,6 +38,22 @@ class ChessGame extends FlameGame {
   /// Appelé quand le joueur choisit un coup (départ, arrivée).
   void Function(String from, String to)? onMove;
   void Function(String cellId)? onSelect;
+
+  // --- Évènements pour l'audio (déclenchés à la réception d'un nouveau coup) ---
+
+  /// Un coup vient d'être joué (type de la pièce, départ, arrivée).
+  void Function(PieceType piece, String from, String to)? onMoveEvent;
+
+  /// Prise : type de l'attaquant et de la victime.
+  void Function(PieceType attacker, PieceType victim)? onCapture;
+
+  /// Un roi est en échec (joueur concerné).
+  void Function(int player)? onCheck;
+
+  /// Un roi est mat (joueur concerné).
+  void Function(int player)? onMate;
+
+  final List<CaptureSequence> _sequences = [];
 
   late final BoardComponent board = BoardComponent(this)..priority = -1000;
   final Map<String, PieceComponent> _pieces = {};
@@ -55,7 +79,9 @@ class ChessGame extends FlameGame {
 
   @override
   Future<void> onLoad() async {
+    await add(ArenaBackdrop());
     await add(board);
+    await initFx();
   }
 
   @override
@@ -141,7 +167,69 @@ class ChessGame extends FlameGame {
       _pendingSync = true;
       return;
     }
-    _sync(animate: prevPly != null && prevPly != msg.state.ply && ev != null && ev.isMove);
+    final animate = prevPly != null && prevPly != msg.state.ply && ev != null && ev.isMove;
+    _sync(animate: animate);
+    if (animate) _announce(ev);
+  }
+
+  String? _kingCell(int player) {
+    final msg = _msg!;
+    for (var i = 0; i < msg.state.board.length; i++) {
+      final p = msg.state.board[i];
+      if (p != null && p.type == PieceType.king && p.owner == player) return geometry.cells[i].id;
+    }
+    return null;
+  }
+
+  /// Callbacks audio + bannières « ÉCHEC ! » / « MAT ! » (après la prise éventuelle).
+  void _announce(GameEvent ev) {
+    if (ev.piece != null && ev.from != null && ev.to != null) {
+      onMoveEvent?.call(ev.piece!, ev.from!, ev.to!);
+    }
+    final cap = ev.captured;
+    if (cap != null && ev.piece != null) onCapture?.call(ev.piece!, cap.type);
+    for (final c in ev.checks) {
+      onCheck?.call(c.player);
+    }
+    for (final m in ev.mates) {
+      onMate?.call(m);
+    }
+    final delay = cap != null ? 1.0 : 0.4;
+    if (ev.mates.isNotEmpty) {
+      add(TimerComponent(
+          period: delay,
+          removeOnFinish: true,
+          onTick: () {
+            showBanner('MAT !', const Color(0xFFFF3B5C), seconds: 2.0, sizeFactor: 0.22);
+            for (final m in ev.mates) {
+              final id = _kingCell(m);
+              final piece = id == null ? null : _pieces[id];
+              if (piece != null) megaExplosion(chestOf(piece), piece.radius, playerAccents[m]);
+            }
+          }));
+    } else if (ev.checks.isNotEmpty) {
+      add(TimerComponent(
+          period: delay,
+          removeOnFinish: true,
+          onTick: () => showBanner('ÉCHEC !', const Color(0xFFFFB02E), seconds: 1.2)));
+    }
+  }
+
+  /// Explosion massive (mat) : particules, anneaux, tremblement.
+  void megaExplosion(Vector2 at, double r, Color color) {
+    pool.burst(at.x, at.y, 90, r * 22, r * 0.4, color, lifeS: 1.2);
+    pool.burst(at.x, at.y, 60, r * 16, r * 0.3, const Color(0xFFFFFFFF), lifeS: 0.8);
+    pool.burst(at.x, at.y, 30, r * 12, r * 0.25, const Color(0xFFFFD34D), lifeS: 1.4, g: 300);
+    for (var i = 0; i < 3; i++) {
+      add(ShockRing(
+          center: at + Vector2(0, r * 0.8),
+          maxRadius: r * (4 + i * 1.6),
+          color: color,
+          seconds: 0.7,
+          delay: i * 0.12));
+    }
+    hitstop(0.12);
+    shake(r * 1.0, 0.7);
   }
 
   bool _pendingSync = false;
@@ -167,20 +255,33 @@ class ChessGame extends FlameGame {
   void _sync({required bool animate}) {
     final msg = _msg!;
     final ev = msg.lastEvent;
+    finishSequences();
     if (animate && ev != null) {
       final cap = ev.captured;
-      if (cap != null) {
-        final victim = _pieces.remove(cap.at);
-        if (victim != null) {
-          victim.onCaptured();
-          add(FlashComponent(
-              center: victim.position.clone(),
-              maxRadius: victim.radius * 1.4,
-              color: playerAccents[cap.owner]));
-          victim.removeFromParent();
-        }
+      final victim = cap == null ? null : _pieces.remove(cap.at);
+      final attacker = _pieces[ev.from!];
+      if (victim != null && attacker != null) {
+        // Prise : attaque spéciale, puis l'attaquant prend la case.
+        _pieces.remove(ev.from!);
+        _pieces.remove(ev.to!)?.removeFromParent();
+        attacker.cellId = ev.to!;
+        _pieces[ev.to!] = attacker;
+        victim.onCaptured();
+        late final CaptureSequence seq;
+        seq = CaptureSequence(
+          host: this,
+          attacker: attacker,
+          victim: victim,
+          destination: cellPosition(ev.to!) + Vector2(0, -pieceRadius(ev.to!) * 0.1),
+          destRadius: pieceRadius(ev.to!),
+          onFinished: () => _sequences.remove(seq),
+        );
+        _sequences.add(seq);
+        add(seq);
+      } else {
+        victim?.removeFromParent();
+        _animateMove(ev.from!, ev.to!);
       }
-      _animateMove(ev.from!, ev.to!);
       if (ev.castleRookFrom != null && ev.castleRookTo != null) {
         _animateMove(ev.castleRookFrom!, ev.castleRookTo!);
       }
@@ -212,9 +313,20 @@ class ChessGame extends FlameGame {
         piece.type = want.type; // promotion
       }
       piece.frozen = !msg.state.active[want.owner];
+      piece.inCheck = !piece.frozen && checkedKings.contains(id);
       piece.setSelected(false);
     }
   }
+
+  /// Termine immédiatement les attaques en cours (nouveau coup reçu ou tap pour passer).
+  void finishSequences() {
+    for (final q in List.of(_sequences)) {
+      q.finish();
+    }
+    _sequences.clear();
+  }
+
+  bool get attackPlaying => _sequences.isNotEmpty;
 
   void _animateMove(String from, String to) {
     final p = _pieces.remove(from);
@@ -262,6 +374,10 @@ class ChessGame extends FlameGame {
   }
 
   void handleTap(Offset pos) {
+    if (attackPlaying) {
+      finishSequences(); // un tap passe l'animation d'attaque
+      return;
+    }
     final id = cellAt(pos);
     final msg = _msg;
     if (id == null || msg == null || !myTurn) return;
