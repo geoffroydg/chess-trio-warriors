@@ -1,0 +1,70 @@
+name: Serveur
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Tests du moteur
+        run: npm test
+        working-directory: engine
+      - name: Dépendances du serveur
+        run: npm ci
+        working-directory: server
+      - name: Tests du serveur
+        run: npm test
+        working-directory: server
+      - name: Typecheck du serveur
+        run: npm run typecheck
+        working-directory: server
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      FCM_SERVICE_ACCOUNT: ${{ secrets.FCM_SERVICE_ACCOUNT }}
+    steps:
+      - name: Vérifier la présence du jeton Cloudflare
+        id: check
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else echo "Secret CLOUDFLARE_API_TOKEN absent : déploiement ignoré."; fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.enabled == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.enabled == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Installer
+        if: steps.check.outputs.enabled == 'true'
+        run: npm ci
+        working-directory: server
+      - name: Déployer
+        if: steps.check.outputs.enabled == 'true'
+        working-directory: server
+        run: |
+          npx wrangler deploy 2>&1 | tee deploy.log
+          url=$(grep -oE 'https://[A-Za-z0-9._-]+\.workers\.dev' deploy.log | head -1 || true)
+          {
+            echo "## Serveur déployé"
+            if [ -n "$url" ]; then echo "URL du worker : \`$url\`"; else echo "Déployé (URL : voir le journal du job)."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Envoyer le secret FCM_SERVICE_ACCOUNT
+        if: steps.check.outputs.enabled == 'true' && env.FCM_SERVICE_ACCOUNT != ''
+        working-directory: server
+        run: printf '%s' "$FCM_SERVICE_ACCOUNT" | npx wrangler secret put FCM_SERVICE_ACCOUNT
