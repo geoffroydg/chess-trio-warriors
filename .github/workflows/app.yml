@@ -61,7 +61,7 @@ jobs:
       - run: flutter test
 
       - name: Build APK
-        run: flutter build apk --release --dart-define=SERVER_URL=${{ vars.SERVER_URL }}
+        run: flutter build apk --release --dart-define=SERVER_URL=${{ vars.SERVER_URL || 'https://chess-trio-warriors.geoffroyd.workers.dev' }}
 
       - name: Renommer l'APK
         run: cp build/app/outputs/flutter-apk/app-release.apk chess-trio-warriors.apk
