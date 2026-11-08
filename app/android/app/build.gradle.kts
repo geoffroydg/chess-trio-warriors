@@ -14,7 +14,7 @@ val hasReleaseKeystore = releaseKeystorePath != null && file(releaseKeystorePath
 
 android {
     namespace = "com.geoffroydg.chesstrio"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
