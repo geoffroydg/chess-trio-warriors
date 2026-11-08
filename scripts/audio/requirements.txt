@@ -1,0 +1,4 @@
+numpy
+piper-tts
+transformers
+scipy

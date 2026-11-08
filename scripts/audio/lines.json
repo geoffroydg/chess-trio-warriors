@@ -1,0 +1,70 @@
+{
+  "_comment": "Répliques originales en français (nekketsu épique). Fichiers : voice/<pièce>_<évènement>_<n>.ogg",
+  "characters": {
+    "king":   {"voice": "fr_FR-tom-medium",    "pitch": 0.82, "tempo": 0.85, "echo": "heavy", "length_scale": 1.15},
+    "queen":  {"voice": "fr_FR-siwis-medium",  "pitch": 1.00, "tempo": 1.05, "echo": "medium", "length_scale": 0.95},
+    "bishop": {"voice": "fr_FR-upmc-medium",   "pitch": 0.92, "tempo": 0.88, "echo": "ethereal", "length_scale": 1.1},
+    "knight": {"voice": "fr_FR-gilles-low",    "pitch": 1.12, "tempo": 1.25, "echo": "light", "length_scale": 0.85},
+    "rook":   {"voice": "fr_FR-gilles-low",    "pitch": 0.68, "tempo": 0.8,  "echo": "heavy", "length_scale": 1.2},
+    "pawn":   {"voice": "fr_FR-siwis-medium",  "pitch": 1.25, "tempo": 1.15, "echo": "light", "length_scale": 0.9},
+    "announcer": {"voice": "fr_FR-tom-medium", "pitch": 0.95, "tempo": 1.0,  "echo": "medium", "length_scale": 1.0}
+  },
+  "pieces": {
+    "king": {
+      "move": ["Avance, mon armée !", "Le destin se met en marche.", "Je tiens cette terre !"],
+      "capture": ["Courbe-toi devant ton roi !", "Ma puissance est sans limite !", "Tombe, rival !"],
+      "check": ["Ton roi vacille !", "Sens ma flamme royale !"],
+      "mate": ["Ta lignée s'achève ici !"],
+      "captured": ["Mon règne... s'éteint..."]
+    },
+    "queen": {
+      "move": ["Je fonce !", "Rien ne m'arrête !", "Suivez mon éclat !"],
+      "capture": ["Trop lent pour moi !", "Je brille plus fort !", "Balayée, l'ennemie !"],
+      "check": ["Défends-toi si tu l'oses !", "Ton roi est à moi !"],
+      "mate": ["Voici ma victoire éclatante !"],
+      "captured": ["Impossible... pas moi !"]
+    },
+    "bishop": {
+      "move": ["L'énergie circule.", "Je suis la voie de lumière.", "Écoutez le vent."],
+      "capture": ["Que ton aura se dissipe !", "L'esprit surpasse l'acier !", "Plonge dans le silence !"],
+      "check": ["Mon rayon te traverse !", "Le sceau est lancé !"],
+      "mate": ["Ton destin est scellé !"],
+      "captured": ["Mon esprit... s'envole..."]
+    },
+    "knight": {
+      "move": ["Hyaaa, j'arrive !", "Au galop, camarades !", "Impossible de m'arrêter !"],
+      "capture": ["Prends ça en pleine charge !", "Mon élan est foudroyant !", "Je t'ai bondi dessus !"],
+      "check": ["Attention, ça fonce !", "Je saute sur ton roi !"],
+      "mate": ["Charge finale, terminé !"],
+      "captured": ["Je me suis emballé..."]
+    },
+    "rook": {
+      "move": ["Je bouge, la terre tremble.", "Rien ne franchit ma muraille.", "Pas à pas, inébranlable."],
+      "capture": ["Écrasé comme un roc !", "Ma force est une montagne !", "Brisé en mille morceaux !"],
+      "check": ["Ma tour te domine !", "Plus de place pour fuir !"],
+      "mate": ["La forteresse a gagné !"],
+      "captured": ["La muraille... s'effondre..."]
+    },
+    "pawn": {
+      "move": ["On y va !", "Je vais devenir fort !", "Un pas de plus !"],
+      "capture": ["J'ai réussi, maître !", "Pas si petit, hein !", "Mon coup secret !"],
+      "check": ["Je menace ton roi !", "Même un pion peut gagner !"],
+      "mate": ["J'ai fait mat, incroyable !"],
+      "captured": ["Continuez sans moi !"]
+    }
+  },
+  "announcer": {
+    "check": "Échec !",
+    "mate": "Échec et mat !",
+    "yourturn": "À toi de jouer !",
+    "start": "Combattants, en position... Que le tournoi commence !",
+    "victory": "Victoire !",
+    "timeout": "Temps écoulé !"
+  },
+  "kiai": [
+    {"char": "knight", "text": "Hyaaah !"},
+    {"char": "queen",  "text": "Haaaaa !"},
+    {"char": "pawn",   "text": "Ouryaaa !"},
+    {"char": "king",   "text": "Hooooo !"}
+  ]
+}

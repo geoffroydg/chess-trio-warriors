@@ -229,6 +229,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final isNew = prev != null && prev.state.ply != m.state.ply && e != null;
     if (isNew) {
       if (e.auto && e.isMove) {
+        sound.onTimeout();
         toast('Temps écoulé : coup joué automatiquement pour ${playerName(e.player)}');
       } else if (e.kind == 'resign') {
         toast('${playerName(e.player)} a abandonné');
@@ -236,30 +237,30 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _playEventSounds(e);
     }
     if (m.turn == me && (prev == null || prev.turn != m.turn)) {
-      sound.playEffect('turn');
+      sound.onYourTurn();
     }
     if (wasPhase != phase) _syncMusic();
   }
 
   void _playEventSounds(GameEvent e) {
     if (!e.isMove || e.piece == null) return;
-    final ev = e.mates.isNotEmpty
-        ? SoundEvent.mate
-        : e.checks.isNotEmpty
-            ? SoundEvent.check
-            : e.captured != null
-                ? SoundEvent.capture
-                : SoundEvent.move;
-    sound.playEffect(ev.name);
-    sound.playVoice(e.piece!, ev);
+    if (e.mates.isNotEmpty) {
+      sound.onMate(e.piece!);
+    } else if (e.checks.isNotEmpty) {
+      sound.onCheck(e.piece!);
+    } else if (e.captured != null) {
+      sound.onCapture(e.piece!, e.captured!.type);
+    } else {
+      sound.onMove(e.piece!);
+    }
   }
 
   void _syncMusic() {
     switch (phase) {
       case Phase.game:
-        sound.playMusic('game');
+        sound.playMusic('battle');
       case Phase.over:
-        sound.stopMusic();
+        sound.onGameOver(game?.result?.winner == me);
       default:
         sound.playMusic('menu');
     }

@@ -1,24 +1,33 @@
-# Fichiers audio attendus (étape 4)
+# Fichiers audio (étape 4b)
 
-Tous les fichiers sont facultatifs : `SoundService` ignore silencieusement ceux qui manquent.
-Format conseillé : `.mp3` (ou `.ogg`), 100 % original, aucune référence à une franchise existante.
+Générés par `scripts/audio/` (workflow `.github/workflows/audio.yml`), format OGG Vorbis, 100 % originaux
+(voir `CREDITS.md`). Tous sont facultatifs : `SoundService` ignore silencieusement ceux qui manquent.
 
-## Musique de fond (`music/`)
-- `music/menu.mp3` : accueil et salle d'attente (boucle)
-- `music/game.mp3` : partie en cours (boucle)
+## Musique (`music/`, stéréo 44,1 kHz ~96 kbps)
+- `music/menu.ogg` : accueil et salon (boucle, ~30 s)
+- `music/battle.ogg` : partie en cours (boucle, ~30 s)
+- `music/tension.ogg` : un roi est en échec (boucle, ~20 s)
+- `music/victory.ogg` : fanfare de victoire (~10 s, sans boucle)
 
 ## Effets (`sfx/`)
-- `sfx/select.mp3` : sélection d'une pièce
-- `sfx/move.mp3` : déplacement
-- `sfx/capture.mp3` : prise
-- `sfx/check.mp3` : échec
-- `sfx/mate.mp3` : mat
-- `sfx/turn.mp3` : c'est ton tour
-- `sfx/win.mp3`, `sfx/lose.mp3` : fin de partie
+- `sfx/aura.ogg` : sélection d'une pièce / début de partie
+- `sfx/dash.ogg` : déplacement
+- `sfx/impact.ogg` : prise
+- `sfx/explosion.ogg` : mat
+- `sfx/beam.ogg` : échec (rayon d'énergie)
+- `sfx/tick.ogg` : tic du minuteur (10 dernières secondes)
+- `sfx/notify.ogg` : c'est ton tour
 
-## Voix françaises par pièce et évènement (`voice/`)
-Nom : `voice/<pièce>_<évènement>.mp3`
-- pièce : `king`, `queen`, `rook`, `bishop`, `knight`, `pawn`
-- évènement : `move`, `capture`, `check`, `mate`
+## Voix (`voice/`, mono 22 kHz) : `<pièce>` = `king`, `queen`, `rook`, `bishop`, `knight`, `pawn`
+- `voice/<pièce>_move_1..3.ogg` (déplacement)
+- `voice/<pièce>_capture_1..3.ogg` (prise)
+- `voice/<pièce>_check_1..2.ogg` (échec donné)
+- `voice/<pièce>_mate_1.ogg` (mat donné)
+- `voice/<pièce>_captured_1.ogg` (je suis pris)
+- `voice/kiai_1..4.ogg` (cris de combat)
+- `voice/announcer_check.ogg`, `announcer_mate.ogg`, `announcer_yourturn.ogg`, `announcer_start.ogg`,
+  `announcer_victory.ogg`, `announcer_timeout.ogg`
 
-Exemple : `voice/knight_capture.mp3`, `voice/queen_mate.mp3` (24 fichiers au maximum).
+Soit 60 répliques de pièces + 4 kiai + 6 annonces. Textes dans `scripts/audio/lines.json`.
+Les fichiers présents dans le dépôt peuvent être des versions de repli (effets numpy, musique procédurale)
+remplacées par le workflow lorsque MusicGen et Piper ont pu tourner.

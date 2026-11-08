@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../config.dart';
 import '../services/api.dart';
+import '../services/sound_service.dart';
 import '../state/app_state.dart';
 import '../widgets/common.dart';
 
@@ -20,7 +21,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _url = TextEditingController(text: context.read<AppState>().serverUrl);
+    final app = context.read<AppState>();
+    _url = TextEditingController(text: app.serverUrl);
+    app.sound.loadSettings().then((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -42,8 +47,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _status = ok ? 'Serveur joignable.' : 'Serveur injoignable.');
   }
 
+  Widget _slider(String label, IconData icon, double value, Future<void> Function(double) set) {
+    return Row(children: [
+      Icon(icon),
+      const SizedBox(width: 8),
+      SizedBox(width: 72, child: Text(label)),
+      Expanded(
+        child: Slider(value: value, onChanged: (v) => setState(() => set(v))),
+      ),
+    ]);
+  }
+
+  Widget _audio(SoundService s) {
+    return Column(children: [
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        secondary: Icon(s.muted ? Icons.volume_off : Icons.volume_up),
+        title: const Text('Muet'),
+        value: s.muted,
+        onChanged: (v) => setState(() => s.setMuted(v)),
+      ),
+      _slider('Musique', Icons.music_note, s.musicVolume, s.setMusicVolume),
+      _slider('Voix', Icons.record_voice_over, s.voiceVolume, s.setVoiceVolume),
+      _slider('Effets', Icons.graphic_eq, s.sfxVolume, s.setSfxVolume),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final sound = context.read<AppState>().sound;
     return Scaffold(
       appBar: AppBar(title: const Text('Réglages')),
       extendBodyBehindAppBar: true,
@@ -80,6 +112,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Text(_status!,
                           textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
                     ),
+                  const SizedBox(height: 8),
+                  _audio(sound),
                   const SizedBox(height: 8),
                   BigButton(label: 'Tester la connexion', secondary: true, onPressed: _test),
                   const SizedBox(height: 14),
