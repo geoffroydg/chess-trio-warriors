@@ -4,3 +4,6 @@ build/
 .wrangler/
 *.keystore
 .env
+
+# Firebase (secret CI)
+app/android/app/google-services.json

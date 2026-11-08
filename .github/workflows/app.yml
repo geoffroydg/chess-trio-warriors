@@ -1,0 +1,90 @@
+name: App Android
+
+on:
+  push:
+    branches: [main, ccr-b4a21867-um8mut]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    env:
+      GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Firebase (optionnel)
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "google-services.json écrit : push activé."
+          else
+            echo "Pas de secret GOOGLE_SERVICES_JSON : build sans push."
+          fi
+
+      - name: Signature (optionnelle)
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "Signature avec le keystore fourni."
+          else
+            echo "Pas de keystore : signature avec la clé debug (sideload)."
+          fi
+
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+      - name: Build APK
+        run: flutter build apk --release --dart-define=SERVER_URL=${{ vars.SERVER_URL }}
+
+      - name: Renommer l'APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk chess-trio-warriors.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chess-trio-warriors-apk
+          path: app/chess-trio-warriors.apk
+
+      - name: Déplacer le tag apk-latest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f apk-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/apk-latest
+
+      - name: Publier la release « latest »
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-latest
+          name: Chess Trio Warriors - dernier APK
+          body: |
+            APK Android (sideload) construit depuis le commit ${{ github.sha }}.
+            Télécharge `chess-trio-warriors.apk` depuis ton téléphone et installe-le.
+          prerelease: true
+          files: app/chess-trio-warriors.apk
