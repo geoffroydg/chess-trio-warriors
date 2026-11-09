@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/services.dart' show rootBundle;
@@ -15,6 +16,13 @@ class CellGeom {
     required this.y,
     required this.polygon,
     required this.light,
+    this.ring = 0,
+    this.wedge = 0,
+    this.angle = 0,
+    this.a0 = 0,
+    this.a1 = 0,
+    this.r0 = 0,
+    this.r1 = 0,
   });
   final String id;
   final int index;
@@ -25,6 +33,16 @@ class CellGeom {
   final double y;
   final List<Offset> polygon;
   final bool light;
+
+  /// Plateau rond : anneau (1 = extérieur), secteur angulaire 0..23, angles en degrés
+  /// (sens trigonométrique vu à l'écran) et rayons normalisés du secteur annulaire.
+  final int ring;
+  final int wedge;
+  final double angle;
+  final double a0;
+  final double a1;
+  final double r0;
+  final double r1;
 
   factory CellGeom.fromJson(Map<String, dynamic> j) => CellGeom(
         id: j['id'] as String,
@@ -38,13 +56,29 @@ class CellGeom {
             .map((p) => Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()))
             .toList(),
         light: (j['light'] ?? false) as bool,
+        ring: (j['ring'] ?? 0) as int,
+        wedge: (j['wedge'] ?? 0) as int,
+        angle: ((j['angle'] ?? 0) as num).toDouble(),
+        a0: ((j['a0'] ?? 0) as num).toDouble(),
+        a1: ((j['a1'] ?? 0) as num).toDouble(),
+        r0: ((j['r0'] ?? 0) as num).toDouble(),
+        r1: ((j['r1'] ?? 0) as num).toDouble(),
       );
 }
 
 class BoardGeometry {
-  BoardGeometry(this.outline, this.cells);
+  BoardGeometry(this.outline, this.cells,
+      {this.round = false, this.rings = const [], this.medallion = 0, this.radius = 0.5});
   final List<Offset> outline;
   final List<CellGeom> cells;
+
+  /// Plateau rond (disque de centre (0.5, 0.5) et de rayon [radius]).
+  final bool round;
+
+  /// Rayons des bords d'anneaux, de l'extérieur vers le médaillon (normalisés).
+  final List<double> rings;
+  final double medallion;
+  final double radius;
 
   CellGeom byId(String id) => cells[cellIndexOf(id)];
 
@@ -62,6 +96,10 @@ class BoardGeometry {
           .map((p) => Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()))
           .toList(),
       cells,
+      round: j['shape'] == 'round',
+      rings: [for (final r in (j['rings'] as List? ?? const [])) (r as num).toDouble()],
+      medallion: ((j['medallion'] ?? 0) as num).toDouble(),
+      radius: ((j['radius'] ?? 0.5) as num).toDouble(),
     );
   }
 
@@ -69,30 +107,36 @@ class BoardGeometry {
       BoardGeometry.fromJsonString(await rootBundle.loadString('assets/geometry.json'));
 }
 
-/// Projection « vue 2D inclinée » : rotation du plateau (le joueur [viewer] en bas),
-/// écrasement vertical [squash] et mise à l'échelle selon la profondeur.
+/// Projection « vue inclinée » : rotation du plateau (le joueur [viewer] en bas), puis
+/// vraie perspective d'un plan posé sur une table (homographie) : écrasement vertical
+/// [squash] et grossissement de ce qui est devant ([tilt] > 0). Un cercle reste une ellipse.
 ///
-/// Espace de sortie : x dans [-1, 1], y dans ≈ [-squash, squash], y vers le bas.
+/// Espace de sortie : x ≈ [-1, 1], y ≈ [-squash, squash], y vers le bas ; le centre du
+/// plateau est à l'origine.
 class BoardProjection {
-  const BoardProjection({required this.viewer, this.squash = 0.6, this.depth = 0.28});
+  const BoardProjection({required this.viewer, this.squash = 0.62, this.tilt = 0.13});
   final int viewer;
   final double squash;
 
-  /// Réduction maximale de l'échelle tout au fond du plateau (0 = pas de perspective).
-  final double depth;
+  /// Force de la perspective : rapport d'échelle avant/fond = (1 + tilt) / (1 - tilt).
+  final double tilt;
+
+  /// Angle de rotation (radians, sens trigonométrique vu à l'écran) : sur le plateau rond,
+  /// le joueur 1 est en haut à gauche (150°) et le joueur 2 en haut à droite (30°) ;
+  /// tourner de viewer × 120° amène le joueur [viewer] en bas (270°).
+  double get angle => viewer * 2 * math.pi / 3;
 
   /// Coordonnées normalisées du plateau (0..1) -> repère tourné (-1..1, y vers le bas).
   Offset rotate(double nx, double ny) {
     final dx = (nx - 0.5) * 2;
     final dy = (ny - 0.5) * 2;
-    final a = viewer * 2 * math.pi / 3;
-    final c = math.cos(a);
-    final s = math.sin(a);
-    return Offset(dx * c - dy * s, dx * s + dy * c);
+    final c = math.cos(angle);
+    final s = math.sin(angle);
+    return Offset(dx * c + dy * s, -dx * s + dy * c);
   }
 
   /// Facteur d'échelle de perspective pour une ordonnée tournée [ry] (1 = devant, -1 = fond).
-  double scaleAtRotatedY(double ry) => 1 - depth * (1 - ry) / 2;
+  double scaleAtRotatedY(double ry) => 1 / (1 - tilt * ry);
 
   Offset project(double nx, double ny) {
     final r = rotate(nx, ny);
@@ -104,4 +148,21 @@ class BoardProjection {
   double scaleAt(double nx, double ny) => scaleAtRotatedY(rotate(nx, ny).dy);
 
   Offset projectOffset(Offset p) => project(p.dx, p.dy);
+
+  /// Même transformation sous forme de matrice 4×4 (colonnes, pour Canvas.transform) :
+  /// coordonnées normalisées du plateau -> espace projeté.
+  Float64List matrix() {
+    final c = math.cos(angle);
+    final s = math.sin(angle);
+    // Rotation + centrage : (x, y) -> (rx, ry) = R·(2x - 1, 2y - 1).
+    final ax = 2 * c, bx = 2 * s, cx = -c - s; // rx = ax·x + bx·y + cx
+    final ay = -2 * s, by = 2 * c, cy = s - c; // ry = ay·x + by·y + cy
+    // Sortie : X = rx / w, Y = squash·ry / w, w = 1 - tilt·ry.
+    return Float64List.fromList([
+      ax, squash * ay, 0, -tilt * ay, //
+      bx, squash * by, 0, -tilt * by, //
+      0, 0, 1, 0, //
+      cx, squash * cy, 0, 1 - tilt * cy, //
+    ]);
+  }
 }

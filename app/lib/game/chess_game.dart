@@ -2,9 +2,8 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
-import 'package:flame/events.dart';
 import 'package:flame/game.dart';
-import 'package:flutter/painting.dart' show Color, Offset, Path, Canvas, Paint, PaintingStyle, StrokeJoin;
+import 'package:flutter/painting.dart' show Color, Offset;
 
 import '../models/geometry.dart';
 import '../models/protocol.dart';
@@ -12,10 +11,11 @@ import 'arena_backdrop.dart';
 import 'attacks.dart';
 import 'fx.dart';
 import 'piece_component.dart';
+import 'round_board.dart';
 import 'warrior_piece.dart';
 
-/// Jeu Flame : plateau hexagonal en vue 2D inclinée, pièces, sélection et animations.
-class ChessGame extends FlameGame with FxHost {
+/// Jeu Flame : plateau rond en vue inclinée (perspective), pièces, sélection et animations.
+class ChessGame extends FlameGame with FxHost implements BoardHost {
   ChessGame({
     required this.geometry,
     required this.viewer,
@@ -30,6 +30,7 @@ class ChessGame extends FlameGame with FxHost {
         pieceFactory = pieceFactory ??
             warriorFactory;
 
+  @override
   final BoardGeometry geometry;
   final int viewer;
   final BoardProjection projection;
@@ -61,10 +62,15 @@ class ChessGame extends FlameGame with FxHost {
   GameMsg? _msg;
   int _me = 0;
   int? _lastPly;
+  @override
   String? selected;
+  @override
   Set<String> targets = {};
+  @override
   Set<String> checkedKings = {};
+  @override
   String? lastFrom;
+  @override
   String? lastTo;
 
   // Mise en page courante.
@@ -92,8 +98,11 @@ class ChessGame extends FlameGame with FxHost {
 
   void _relayout(Vector2 size) {
     if (size.x <= 0 || size.y <= 0) return;
-    // Emprise de l'hexagone projeté.
-    final pts = [for (final p in geometry.outline) projection.projectOffset(p)];
+    // Emprise du disque projeté, liseré compris.
+    final c0 = Offset(0.5, 0.5);
+    final pts = [
+      for (final p in geometry.outline) projection.projectOffset(c0 + (p - c0) * rimFactor),
+    ];
     var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
     for (final p in pts) {
       minX = math.min(minX, p.dx);
@@ -101,10 +110,11 @@ class ChessGame extends FlameGame with FxHost {
       minY = math.min(minY, p.dy);
       maxY = math.max(maxY, p.dy);
     }
-    const marginTop = 0.10; // place pour les pièces qui dépassent
-    const marginSide = 0.04;
+    const marginTop = 0.16; // place pour les pièces du fond qui dépassent
+    const marginSide = 0.03;
+    const marginBottom = rimThickness + 0.05; // tranche + ombre
     final w = (maxX - minX) + 2 * marginSide;
-    final h = (maxY - minY) + marginTop + 0.06;
+    final h = (maxY - minY) + marginTop + marginBottom;
     scale = math.min(size.x / w, size.y / h);
     final cx = (minX + maxX) / 2;
     final top = minY - marginTop;
@@ -114,12 +124,23 @@ class ChessGame extends FlameGame with FxHost {
       for (final c in geometry.cells)
         [for (final p in c.polygon) _toScreen(projection.projectOffset(p))],
     ];
+    _screenCenters = [for (final c in geometry.cells) _toScreen(projection.project(c.x, c.y))];
+    boardView = BoardView(geometry: geometry, projection: projection, scale: scale, origin: origin);
     _laidOut = true;
     board.size = size;
+    board.invalidate();
     for (final e in _pieces.entries) {
       _place(e.value, e.key);
     }
   }
+
+  List<Offset> _screenCenters = const [];
+
+  @override
+  BoardView? boardView;
+
+  @override
+  List<bool> get activePlayers => _msg?.state.active ?? const [true, true, true];
 
   Offset _toScreen(Offset p) => Offset(origin.dx + p.dx * scale, origin.dy + p.dy * scale);
 
@@ -129,10 +150,13 @@ class ChessGame extends FlameGame with FxHost {
     return Vector2(p.dx, p.dy);
   }
 
-  /// Rayon d'un pion à l'endroit de la case.
+  /// Rayon d'un pion à l'endroit de la case (perspective ; un peu plus petit vers le centre,
+  /// où les cases du plateau rond sont plus étroites).
   double pieceRadius(String id) {
     final c = geometry.byId(id);
-    return scale * 0.052 * projection.scaleAt(c.x, c.y);
+    final ring = c.ring == 0 ? 1 : c.ring;
+    const ringScale = [1.0, 0.92, 0.82, 0.72];
+    return scale * 0.056 * ringScale[ring - 1] * projection.scaleAt(c.x, c.y);
   }
 
   void _place(PieceComponent p, String id) =>
@@ -365,22 +389,18 @@ class ChessGame extends FlameGame with FxHost {
 
   // --- Interaction ---
 
-  /// Case la plus proche du point (en pixels), ou null.
+  /// Case sous le point (en pixels) : test d'appartenance au polygone projeté du secteur ;
+  /// à défaut, case dont le centre est le plus proche dans une petite tolérance.
   String? cellAt(Offset pos) {
-    String? best;
-    var bestD = double.infinity;
     for (var i = 0; i < screenPolygons.length; i++) {
-      final poly = screenPolygons[i];
-      final inside = _contains(poly, pos);
-      var cx = 0.0, cy = 0.0;
-      for (final p in poly) {
-        cx += p.dx / 4;
-        cy += p.dy / 4;
-      }
-      final d = (Offset(cx, cy) - pos).distance;
-      final tol = scale * 0.07;
-      if ((inside || d < tol) && (d - (inside ? tol : 0)) < bestD) {
-        bestD = d - (inside ? tol : 0);
+      if (_contains(screenPolygons[i], pos)) return geometry.cells[i].id;
+    }
+    String? best;
+    var bestD = scale * 0.06;
+    for (var i = 0; i < _screenCenters.length; i++) {
+      final d = (_screenCenters[i] - pos).distance;
+      if (d < bestD) {
+        bestD = d;
         best = geometry.cells[i].id;
       }
     }
@@ -399,6 +419,7 @@ class ChessGame extends FlameGame with FxHost {
     return inside;
   }
 
+  @override
   void handleTap(Offset pos) {
     if (attackPlaying) {
       finishSequences(); // un tap passe l'animation d'attaque
@@ -434,116 +455,6 @@ class ChessGame extends FlameGame with FxHost {
   }
 
   /// Pièce adverse présente sur une case (pour dessiner les prises).
+  @override
   bool hasPiece(String id) => _pieces.containsKey(id);
-}
-
-/// Dessin du plateau : socle, cases, surbrillances.
-class BoardComponent extends PositionComponent with TapCallbacks {
-  BoardComponent(this.game) : super(position: Vector2.zero());
-  final ChessGame game;
-  double _time = 0;
-
-  static const _sectorTint = [Color(0xFF5B8CFF), Color(0xFFFF6B3D), Color(0xFF8B7CFF)];
-  static const _light = Color(0xFF3A4668);
-  static const _dark = Color(0xFF232B47);
-
-  @override
-  void update(double dt) {
-    _time += dt;
-  }
-
-  @override
-  void onTapDown(TapDownEvent event) {
-    final p = event.localPosition;
-    game.handleTap(Offset(p.x, p.y));
-  }
-
-  Path _path(List<Offset> pts) => Path()..addPolygon(pts, true);
-
-  @override
-  void render(Canvas canvas) {
-    if (game.screenPolygons.isEmpty) return;
-    final outline = _path(game.screenOutline);
-    // Épaisseur du plateau + halo.
-    final depth = game.scale * 0.035;
-    canvas.drawPath(
-      outline.shift(Offset(0, depth * 1.6)),
-      Paint()
-        ..color = const Color(0x55FF8A3D)
-        ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 14),
-    );
-    canvas.drawPath(outline.shift(Offset(0, depth)), Paint()..color = const Color(0xFF0B1022));
-    canvas.drawPath(outline, Paint()..color = const Color(0xFF151B33));
-
-    final msg = game._msg;
-    final active = msg?.state.active ?? const [true, true, true];
-
-    for (var i = 0; i < game.screenPolygons.length; i++) {
-      final c = game.geometry.cells[i];
-      final base = c.light ? _light : _dark;
-      var color = Color.lerp(base, _sectorTint[c.sector], 0.16)!;
-      if (!active[c.sector]) color = Color.lerp(color, const Color(0xFF3A3A3A), 0.4)!;
-      final path = _path(game.screenPolygons[i]);
-      canvas.drawPath(path, Paint()..color = color);
-      canvas.drawPath(
-        path,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeJoin = StrokeJoin.round
-          ..strokeWidth = 0.8
-          ..color = const Color(0xFF0E1328),
-      );
-    }
-
-    // Dernier coup.
-    for (final id in [game.lastFrom, game.lastTo]) {
-      if (id == null) continue;
-      canvas.drawPath(_path(game.screenPolygons[game.geometry.byId(id).index]),
-          Paint()..color = const Color(0x55FFB23D));
-    }
-    // Rois en échec (pulsation).
-    final pulse = 0.5 + 0.5 * math.sin(_time * 6);
-    for (final id in game.checkedKings) {
-      canvas.drawPath(
-        _path(game.screenPolygons[game.geometry.byId(id).index]),
-        Paint()..color = Color.fromRGBO(255, 40, 40, 0.25 + 0.3 * pulse),
-      );
-    }
-    // Sélection et coups légaux.
-    final sel = game.selected;
-    if (sel != null) {
-      canvas.drawPath(
-        _path(game.screenPolygons[game.geometry.byId(sel).index]),
-        Paint()..color = const Color(0x6635E0FF),
-      );
-      canvas.drawPath(
-        _path(game.screenPolygons[game.geometry.byId(sel).index]),
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.5
-          ..color = const Color(0xFF35E0FF),
-      );
-    }
-    for (final id in game.targets) {
-      final cell = game.geometry.byId(id);
-      final path = _path(game.screenPolygons[cell.index]);
-      final capture = game.hasPiece(id);
-      final col = capture ? const Color(0xFFFF4D4D) : const Color(0xFFFFA63D);
-      canvas.drawPath(path, Paint()..color = col.withAlpha(capture ? 70 : 45));
-      final pos = game.cellPosition(id);
-      final r = game.pieceRadius(id);
-      if (capture) {
-        canvas.drawCircle(
-          Offset(pos.x, pos.y),
-          r * 1.15,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 2.2
-            ..color = col,
-        );
-      } else {
-        canvas.drawCircle(Offset(pos.x, pos.y), r * (0.35 + 0.06 * pulse), Paint()..color = col);
-      }
-    }
-  }
 }
