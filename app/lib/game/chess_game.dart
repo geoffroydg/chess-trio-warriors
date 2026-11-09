@@ -583,6 +583,9 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
     picker = null;
   }
 
+  /// Annule la sélection courante.
+  void deselect() => _clearSelection();
+
   void _clearSelection() {
     if (selected != null) _pieces[selected!]?.setSelected(false);
     selected = null;

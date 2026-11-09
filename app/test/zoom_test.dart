@@ -7,6 +7,8 @@ import 'package:chesstrio/models/geometry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'round_board_test.dart' show initialMsg;
+
 void main() {
   final geo = BoardGeometry.fromJsonString(File('assets/geometry.json').readAsStringSync());
 
@@ -141,6 +143,34 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(cam.zoom, 1);
       expect(game.zoomed.value, isFalse);
+    });
+
+    testWidgets('pièce sélectionnée : pas de double tap, chaque tap joue immédiatement', (tester) async {
+      final from = geo.cells[8].id, to = geo.cells[16].id;
+      final moves = <String>[];
+      final game = ChessGame(geometry: geo, viewer: 0, onMove: (f, t, p) => moves.add('$f-$t'));
+      await tester.pumpWidget(MaterialApp(
+          home: SizedBox(width: 420, height: 600, child: ChessGameView(game: game))));
+      await tester.pump();
+      game.applyGame(initialMsg(legal: [{'from': from, 'to': to}]), 0);
+      await tester.pump();
+      final a = game.cellPosition(from), b = game.cellPosition(to);
+      await tester.tapAt(Offset(a.x, a.y));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(game.selected, from);
+      // 2e tap rapide sur la destination : coup joué, aucun zoom.
+      await tester.tapAt(Offset(b.x, b.y));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(moves, ['$from-$to']);
+      expect(game.boardCamera.zoom, 1);
+
+      // Sans sélection : double tap sur une pièce = zoom et sélection annulée.
+      await tester.tapAt(Offset(a.x, a.y));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(Offset(a.x, a.y));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(game.selected, isNull);
+      expect(game.boardCamera.zoom, closeTo(BoardCamera.doubleTapZoom, 1e-6));
     });
   });
 }

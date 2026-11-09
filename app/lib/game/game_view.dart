@@ -25,6 +25,7 @@ class _ChessGameViewState extends State<ChessGameView> {
   bool _multi = false; // deux doigts à un moment du geste
   Offset? _lastTapPos;
   Duration? _lastTapTime;
+  bool _lastTapFree = false; // le dernier tap a eu lieu sans pièce sélectionnée
   Offset _velocity = Offset.zero;
   Duration _lastMoveTime = Duration.zero;
 
@@ -91,13 +92,18 @@ class _ChessGameViewState extends State<ChessGameView> {
     if (!_multi && !_moved) {
       final pos = e.localPosition;
       final now = e.timeStamp;
-      final isDouble = _lastTapTime != null &&
+      // Double tap uniquement si aucune pièce n'était sélectionnée au 1er tap : sinon chaque
+      // tap est un coup ou une désélection, sans délai.
+      final isDouble = _lastTapFree &&
+          _lastTapTime != null &&
           now - _lastTapTime! <= ChessGameView.doubleTapWindow &&
           (pos - _lastTapPos!).distance <= ChessGameView.tapSlop * 4;
       if (isDouble) {
         _lastTapTime = null;
+        game.deselect(); // le 1er tap a pu sélectionner une pièce : on l'annule
         cam.doubleTap(pos);
       } else {
+        _lastTapFree = game.selected == null;
         _lastTapTime = now;
         _lastTapPos = pos;
         game.handleTap(pos);
