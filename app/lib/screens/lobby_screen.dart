@@ -87,7 +87,7 @@ class LobbyScreen extends StatelessWidget {
                     style: const TextStyle(color: Colors.white70, fontSize: 16),
                   ),
                   const SizedBox(height: 20),
-                  for (var i = 0; i < 3; i++) _slot(app, room?.playerById(i), i),
+                  for (var i = 0; i < 3; i++) _slot(context, app, room?.playerById(i), i, isHost),
                   const SizedBox(height: 20),
                   if (app.connStatus != ConnStatus.connected && room == null)
                     const Padding(
@@ -116,7 +116,36 @@ class LobbyScreen extends StatelessWidget {
     );
   }
 
-  Widget _slot(AppState app, PlayerInfo? p, int i) {
+  Future<void> _pickBot(BuildContext context, AppState app, int seat) async {
+    final level = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: kPanel,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Niveau du bot 🤖',
+                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+            ),
+            for (final l in botLevels)
+              ListTile(
+                leading: const Icon(Icons.smart_toy_outlined),
+                title: Text(botLevelLabel(l), style: const TextStyle(fontSize: 18)),
+                trailing: l == 'moyen' ? const Text('par défaut') : null,
+                onTap: () => Navigator.of(ctx).pop(l),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (level != null) app.addBot(seat, level);
+  }
+
+  Widget _slot(BuildContext context, AppState app, PlayerInfo? p, int i, bool isHost) {
+    final canAddBot = p == null && isHost && i != 0 && !(app.room?.started ?? false);
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -136,15 +165,38 @@ class LobbyScreen extends StatelessWidget {
           ),
           const SizedBox(width: 14),
           Expanded(
-            child: Text(
-              p == null ? 'En attente d\'un joueur…' : '${p.pseudo}${i == app.me ? ' (toi)' : ''}${i == 0 ? ' · hôte' : ''}',
-              style: TextStyle(
-                  fontSize: 19,
-                  fontWeight: FontWeight.w700,
-                  color: p == null ? Colors.white38 : Colors.white),
-            ),
+            child: p != null && p.isBot
+                ? Row(children: [
+                    Flexible(
+                      child: Text(p.pseudo,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+                    ),
+                    const SizedBox(width: 8),
+                    BotBadge(level: p.level),
+                  ])
+                : Text(
+                    p == null
+                        ? 'En attente d\'un joueur…'
+                        : '${p.pseudo}${i == app.me ? ' (toi)' : ''}${i == 0 ? ' · hôte' : ''}',
+                    style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                        color: p == null ? Colors.white38 : Colors.white),
+                  ),
           ),
-          if (p != null)
+          if (canAddBot)
+            TextButton(
+              onPressed: () => _pickBot(context, app, i),
+              child: const Text('+ Ajouter un bot', style: TextStyle(color: kOrange, fontSize: 15)),
+            )
+          else if (p != null && p.isBot && isHost && !(app.room?.started ?? false))
+            IconButton(
+              tooltip: 'Retirer le bot',
+              icon: const Icon(Icons.close, color: Colors.white70),
+              onPressed: () => app.removeBot(i),
+            )
+          else if (p != null && !p.isBot)
             Row(mainAxisSize: MainAxisSize.min, children: [
               Icon(Icons.circle, size: 12, color: p.connected ? const Color(0xFF3DDC84) : Colors.grey),
               const SizedBox(width: 6),

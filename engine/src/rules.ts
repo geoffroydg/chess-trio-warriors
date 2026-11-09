@@ -30,7 +30,8 @@ import type {
 type Board = (Piece | null)[];
 type Active = readonly boolean[];
 
-interface IMove {
+/** Coup interne (indices de cases) : utilisé par le moteur et le bot. */
+export interface IMove {
   from: number;
   to: number;
   castle?: 'king' | 'queen';
@@ -76,7 +77,7 @@ function isAttacker(pc: Piece | null, attacker: Player, types: string): boolean 
 }
 
 /** Le joueur `attacker` (supposé actif) attaque-t-il la case x ? */
-function attacks(board: Board, x: number, attacker: Player): boolean {
+export function attacks(board: Board, x: number, attacker: Player): boolean {
   for (const y of PAWN_ATTACKERS[attacker][x]) if (isAttacker(board[y], attacker, 'P')) return true;
   for (const y of KNIGHT_ADJ[x]) if (isAttacker(board[y], attacker, 'N')) return true;
   for (const y of KING_ADJ[x]) if (isAttacker(board[y], attacker, 'K')) return true;
@@ -102,12 +103,12 @@ function attackersOf(board: Board, active: Active, x: number, player: Player): P
   return out;
 }
 
-function isAttackedByAny(board: Board, active: Active, x: number, player: Player): boolean {
+export function isAttackedByAny(board: Board, active: Active, x: number, player: Player): boolean {
   for (const q of PLAYERS) if (q !== player && active[q] && attacks(board, x, q)) return true;
   return false;
 }
 
-function findKing(board: Board, player: Player): number {
+export function findKing(board: Board, player: Player): number {
   for (let c = 0; c < NUM_CELLS; c++) {
     const pc = board[c];
     if (pc !== null && pc.type === 'K' && pc.owner === player) return c;
@@ -140,7 +141,7 @@ function isPromotion(player: Player, to: number): boolean {
   return sectorOf(to) !== player && rankOf(to) === 0;
 }
 
-function pseudoMoves(board: Board, active: Active, player: Player): IMove[] {
+export function pseudoMoves(board: Board, active: Active, player: Player): IMove[] {
   const out: IMove[] = [];
   const add = (from: number, to: number, promo = false) => {
     const t = board[to];
@@ -247,7 +248,7 @@ function legalFor(board: Board, active: Active, player: Player, rights: Castling
   return out;
 }
 
-function toPublic(m: IMove): Move {
+export function toPublic(m: IMove): Move {
   const out: Move = { from: cellName(m.from), to: cellName(m.to) };
   if (m.castle) out.castle = m.castle;
   if (m.promo) out.promotion = 'Q';
@@ -258,7 +259,8 @@ function toPublic(m: IMove): Move {
 // Cache des coups légaux par état (les états sont immuables).
 const legalCache = new WeakMap<GameState, IMove[]>();
 
-function legalInternal(state: GameState): IMove[] {
+/** Coups légaux internes (mis en cache, ne pas modifier). */
+export function legalInternal(state: GameState): IMove[] {
   if (state.result) return [];
   let ms = legalCache.get(state);
   if (!ms) {
@@ -490,6 +492,13 @@ export function applyMove(state: GameState, move: Move): GameState {
   }
   const m = legalInternal(state).find((x) => x.from === from && x.to === to);
   if (!m) throw new Error(`coup illégal : ${move.from}-${move.to}`);
+  return applyInternal(state, m);
+}
+
+/** Applique un coup interne issu de legalInternal(state) (sans vérification). */
+export function applyInternal(state: GameState, m: IMove): GameState {
+  const from = m.from;
+  const to = m.to;
   const player = state.turn;
   const moved = state.board[from]!;
   const capturedPiece = state.board[to];
@@ -525,10 +534,10 @@ export function applyMove(state: GameState, move: Move): GameState {
   return finalize(state, board, castling, res, ply, quietTurns, lastMoveAt, irreversible, {
     kind: 'move',
     player,
-    move: { from: move.from, to: move.to },
+    move: { from: cellName(from), to: cellName(to) },
     piece: moved.type,
     captured: capturedPiece
-      ? { type: capturedPiece.type, owner: capturedPiece.owner, frozen: !state.active[capturedPiece.owner], at: move.to }
+      ? { type: capturedPiece.type, owner: capturedPiece.owner, frozen: !state.active[capturedPiece.owner], at: cellName(to) }
       : null,
     promotion: m.promo ? 'Q' : null,
     castle: m.castle

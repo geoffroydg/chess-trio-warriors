@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RoomLogic, TURN_MS, FINISHED_TTL_MS, INACTIVITY_TTL_MS, CODE_ALPHABET, generateCode } from '../src/room-logic.ts';
+import { RoomLogic, TURN_MS, FINISHED_TTL_MS, INACTIVITY_TTL_MS, CODE_ALPHABET, generateCode, BOT_DELAY_MIN_MS, BOT_DELAY_MAX_MS, BOT_NAMES } from '../src/room-logic.ts';
 import type { PushMessage, RoomData, ServerMessage } from '../src/room-logic.ts';
 
 function rngFrom(seed: number): () => number {
@@ -286,4 +286,151 @@ test('suppression après 7 jours d\'inactivité', async () => {
   h.advance(INACTIVITY_TTL_MS);
   await h.logic.onAlarm();
   assert.equal(h.deleted, true);
+});
+
+// ---------- Bots ----------
+
+test('ajout / retrait de bot en salle d\'attente (hôte seulement)', async () => {
+  const h = harness();
+  await h.logic.create('ABC234', { pseudo: 'Ana', password: 'p', mode: 'firstMate' });
+  h.connected.add(0);
+  await h.send(0, { type: 'addBot', seat: 2, level: 'difficile' });
+  let r = h.last(0, 'room');
+  assert.equal(r.players.length, 2);
+  const bot = r.players.find((p: any) => p.id === 2);
+  assert.equal(bot.isBot, true);
+  assert.equal(bot.level, 'difficile');
+  assert.equal(bot.connected, true);
+  assert.ok(BOT_NAMES.includes(bot.pseudo));
+  assert.equal(r.players[0].isBot, false);
+  await h.send(0, { type: 'addBot', seat: 2, level: 'facile' });
+  assert.equal(h.last(0, 'error').code, 'seatTaken');
+  await h.send(0, { type: 'addBot', seat: 1, level: 'expert' });
+  assert.equal(h.last(0, 'error').code, 'badMessage');
+  await h.send(0, { type: 'addBot', seat: 0, level: 'facile' });
+  assert.equal(h.last(0, 'error').code, 'badMessage');
+  // un humain rejoint : il prend le siège libre (1)
+  const j = await h.logic.join({ pseudo: 'Bob', password: 'p' });
+  assert.ok(j.ok && j.value.playerId === 1);
+  await h.send(1, { type: 'addBot', level: 'facile' });
+  assert.equal(h.last(1, 'error').code, 'notHost');
+  await h.send(1, { type: 'removeBot', seat: 2 });
+  assert.equal(h.last(1, 'error').code, 'notHost');
+  await h.send(0, { type: 'removeBot', seat: 1 });
+  assert.equal(h.last(0, 'error').code, 'notBot');
+  await h.send(0, { type: 'addBot', level: 'moyen' });
+  assert.equal(h.last(0, 'error').code, 'roomFull');
+  assert.equal(h.last(0, 'room').ready, true);
+  await h.send(0, { type: 'removeBot', seat: 2 });
+  r = h.last(0, 'room');
+  assert.equal(r.players.length, 2);
+  assert.equal(r.ready, false);
+  // siège libéré : un nouvel humain peut le prendre
+  const j2 = await h.logic.join({ pseudo: 'Cléo', password: 'p' });
+  assert.ok(j2.ok && j2.value.playerId === 2);
+  // le jeton d'un bot ne permet jamais de se connecter
+  assert.equal(await h.logic.authenticate(''), null);
+  await h.send(0, { type: 'start' });
+  await h.send(0, { type: 'addBot', seat: 1, level: 'moyen' });
+  assert.equal(h.last(0, 'error').code, 'alreadyStarted');
+});
+
+test('salon solo : 2 bots, démarré aussitôt, mot de passe facultatif', async () => {
+  const h = harness(3);
+  const bad = await h.logic.create('ABC234', { pseudo: 'Ana', mode: 'firstMate', bots: [{ level: 'moyen' }, { level: 'nul' }] });
+  assert.ok(!bad.ok && bad.status === 400);
+  const bad2 = await h.logic.create('ABC234', { pseudo: 'Ana', mode: 'firstMate', bots: [{ level: 'moyen' }] });
+  assert.ok(!bad2.ok && bad2.status === 400, 'un seul bot : mot de passe requis');
+  const c = await h.logic.create('ABC234', { pseudo: 'Ana', mode: 'twoMates', bots: [{ level: 'facile' }, { level: 'difficile' }] });
+  assert.ok(c.ok && c.value.playerId === 0);
+  const d = h.stored!;
+  assert.equal(d.started, true);
+  assert.equal(d.state!.turn, 0);
+  assert.deepEqual(d.players.map((p) => [p.id, !!p.isBot, p.botLevel]), [[0, false, undefined], [1, true, 'facile'], [2, true, 'difficile']]);
+  assert.notEqual(d.players[1].pseudo, d.players[2].pseudo);
+  assert.equal(d.botMoveAt, null);
+  assert.equal(h.alarm, d.turnDeadline);
+  const late = await h.logic.join({ pseudo: 'Bob', password: '' });
+  assert.ok(!late.ok);
+  h.connected.add(0);
+  await h.logic.onConnect(0);
+  assert.deepEqual(h.inbox[0].map((m) => m.type), ['room', 'game']);
+  const room = h.last(0, 'room');
+  assert.equal(room.started, true);
+  assert.equal(room.players[2].isBot, true);
+  assert.equal(room.players[2].level, 'difficile');
+});
+
+test('partie complète : 1 humain + 2 bots, alarme unique sur la prochaine échéance, pas de push aux bots', async () => {
+  const h = harness(11);
+  const c = await h.logic.create('ABC234', { pseudo: 'Ana', password: '', mode: 'firstMate', bots: [{ level: 'moyen' }, { level: 'facile' }] });
+  assert.ok(c.ok);
+  h.connected.add(0);
+  await h.send(0, { type: 'registerPush', fcmToken: 'tok0' });
+  let botMoves = 0;
+  let humanMoves = 0;
+  for (let n = 0; n < 3000 && !h.stored!.state!.result; n++) {
+    const d = h.stored!;
+    const turn = d.state!.turn;
+    if (turn === 0) {
+      assert.equal(d.botMoveAt, null);
+      assert.equal(h.alarm, d.turnDeadline);
+      // l'humain joue vite (coup légal), ou laisse parfois filer le temps
+      if (n % 9 === 0) {
+        h.advance(TURN_MS);
+        await h.logic.onAlarm();
+      } else {
+        const g = h.last(0, 'game');
+        const m = g.legalMoves[n % g.legalMoves.length];
+        await h.send(0, { type: 'move', from: m.from, to: m.to });
+      }
+      humanMoves++;
+    } else {
+      // au tour d'un bot : alarme = délai naturel (avant le minuteur de 60 s)
+      const at = d.botMoveAt!;
+      assert.ok(at - h.now >= BOT_DELAY_MIN_MS && at - h.now <= BOT_DELAY_MAX_MS, `délai ${at - h.now}`);
+      assert.equal(h.alarm, at);
+      assert.ok(at < d.turnDeadline!);
+      // une alarme précoce (avant l'échéance) ne fait rien
+      await h.logic.onAlarm();
+      assert.equal(h.stored!.state!.ply, d.state!.ply);
+      const ply = d.state!.ply;
+      await h.fireAlarm();
+      assert.equal(h.stored!.state!.ply, ply + 1, 'le bot a joué');
+      assert.equal(h.last(0, 'game').lastEvent.auto, undefined);
+      botMoves++;
+    }
+  }
+  const st = h.stored!.state!;
+  assert.ok(st.result, 'la partie doit se terminer');
+  assert.ok(botMoves > 0 && humanMoves > 0);
+  assert.equal(h.stored!.botMoveAt, null);
+  assert.equal(h.alarm, h.now + FINISHED_TTL_MS);
+  // aucun message n'a été envoyé aux sièges des bots, et les push ne visent que l'humain
+  assert.equal(h.inbox[1].length, 0);
+  assert.equal(h.inbox[2].length, 0);
+  for (const batch of h.pushes) for (const m of batch) assert.equal(m.fcmToken, 'tok0');
+  assert.equal(h.last(0, 'game').over, true);
+});
+
+test('2 humains + 1 bot : le bot joue à son tour, le minuteur reste celui des humains', async () => {
+  const h = harness(5);
+  await h.logic.create('ABC234', { pseudo: 'Ana', password: 'p', mode: 'twoMates' });
+  await h.send(0, { type: 'addBot', seat: 1, level: 'difficile' });
+  const j = await h.logic.join({ pseudo: 'Bob', password: 'p' });
+  assert.ok(j.ok && j.value.playerId === 2);
+  h.connected.add(0).add(2);
+  await h.send(0, { type: 'start' });
+  assert.equal(h.alarm, h.stored!.turnDeadline);
+  await h.send(0, { type: 'move', from: '0e2', to: '0e4' });
+  const d = h.stored!;
+  assert.equal(d.state!.turn, 1);
+  assert.equal(h.alarm, d.botMoveAt);
+  await h.fireAlarm();
+  const g = h.last(2, 'game');
+  assert.equal(g.state.ply, 2);
+  assert.equal(g.lastEvent.player, 1);
+  assert.equal(g.turn, 2);
+  assert.equal(h.stored!.botMoveAt, null);
+  assert.equal(h.alarm, h.stored!.turnDeadline);
 });

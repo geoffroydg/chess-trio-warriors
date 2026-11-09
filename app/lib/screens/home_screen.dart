@@ -8,6 +8,7 @@ import '../widgets/common.dart';
 import 'create_screen.dart';
 import 'join_screen.dart';
 import 'settings_screen.dart';
+import 'solo_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -98,6 +99,16 @@ class _HomeScreenState extends State<HomeScreen> {
                         onChanged: (v) => context.read<AppState>().setPseudo(v),
                       ),
                       const SizedBox(height: 24),
+                      BigButton(
+                        label: 'Jouer seul',
+                        icon: Icons.smart_toy_outlined,
+                        onPressed: () => _go(const SoloScreen()),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text('Contre 2 bots, partie immédiate',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white54)),
+                      const SizedBox(height: 18),
                       BigButton(
                         label: 'Créer un salon',
                         icon: Icons.add_circle_outline,

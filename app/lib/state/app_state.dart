@@ -89,6 +89,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
+  PlayerInfo? playerInfo(int id) => _gamePlayer(id) ?? room?.playerById(id);
+
   bool playerConnected(int id) => (_gamePlayer(id) ?? room?.playerById(id))?.connected ?? false;
 
   /// Heure serveur estimée (ms).
@@ -150,6 +152,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     await _enter(s);
   }
 
+  /// Jouer seul contre 2 bots du niveau donné.
+  Future<void> createSoloRoom(String mode, String level) async {
+    final s = await _apiFactory(serverUrl).createSoloRoom(pseudo, mode, [level, level]);
+    await _enter(s);
+  }
+
   Future<void> joinRoom(String code, String password) async {
     final s = await _apiFactory(serverUrl).joinRoom(code, pseudo, password);
     await _enter(s);
@@ -179,6 +187,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   // --- Actions de jeu ---
 
   bool startGame() => _conn?.send({'type': 'start'}) ?? false;
+  bool addBot(int seat, String level) =>
+      _conn?.send({'type': 'addBot', 'seat': seat, 'level': level}) ?? false;
+  bool removeBot(int seat) => _conn?.send({'type': 'removeBot', 'seat': seat}) ?? false;
   bool resign() => _conn?.send({'type': 'resign'}) ?? false;
   bool sendMove(String from, String to) =>
       _conn?.send({'type': 'move', 'from': from, 'to': to}) ?? false;

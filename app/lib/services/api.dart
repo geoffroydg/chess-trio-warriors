@@ -42,6 +42,16 @@ class ApiClient {
     return _session(j);
   }
 
+  /// Partie solo : salon avec 2 bots, démarré aussitôt par le serveur.
+  Future<Session> createSoloRoom(String pseudo, String mode, List<String> botLevels) async {
+    final j = await _post('/rooms', {
+      'pseudo': pseudo,
+      'mode': mode,
+      'bots': [for (final l in botLevels) {'level': l}],
+    });
+    return _session(j);
+  }
+
   Future<Session> joinRoom(String code, String pseudo, String password) async {
     final j = await _post(
         '/rooms/${Uri.encodeComponent(code.trim().toUpperCase())}/join',

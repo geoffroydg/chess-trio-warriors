@@ -15,6 +15,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Chess Trio Warriors'), findsOneWidget);
+    expect(find.text('Jouer seul'), findsOneWidget);
     expect(find.text('Créer un salon'), findsOneWidget);
     expect(find.text('Rejoindre'), findsOneWidget);
     expect(find.text('Ana'), findsOneWidget);

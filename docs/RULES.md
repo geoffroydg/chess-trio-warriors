@@ -169,6 +169,7 @@ Il n'y a pas de nulle automatique par matériel insuffisant.
 | `applyMove(state, move)` | nouvel état ; lève une erreur si le coup est illégal |
 | `randomMove(state, rng?)` | coup légal aléatoire (timeout), `rng` injectable |
 | `resign(state, player)` | abandon / déconnexion |
+| `botMove(state, level, { rng?, maxNodes? })` | coup d'un bot : `facile` (aléatoire, prend une pièce gratuite une fois sur deux), `moyen` (1 coup + menaces des 2 adversaires), `difficile` (recherche paranoïaque alpha-bêta profondeur 3, quiescence, budget de nœuds) |
 | `status(state)` | trait, échecs en cours, joueurs actifs, éliminations, résultat |
 | `boardCells()` | géométrie de rendu des 96 cases (centre + 4 sommets) |
 | `customState(mode, pieces, opts)` | position arbitraire (tests, puzzles) |

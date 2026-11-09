@@ -49,18 +49,38 @@ class PlayerInfo {
     required this.pseudo,
     required this.connected,
     required this.push,
+    this.isBot = false,
+    this.level,
   });
   final int id;
   final String pseudo;
   final bool connected;
   final bool push;
+
+  /// Joueur artificiel joué par le serveur.
+  final bool isBot;
+
+  /// Niveau du bot : 'facile', 'moyen' ou 'difficile'.
+  final String? level;
+
   factory PlayerInfo.fromJson(Map<String, dynamic> j) => PlayerInfo(
         id: j['id'] as int,
         pseudo: (j['pseudo'] ?? '') as String,
         connected: (j['connected'] ?? false) as bool,
         push: (j['push'] ?? false) as bool,
+        isBot: (j['isBot'] ?? false) as bool,
+        level: j['level'] as String?,
       );
 }
+
+/// Niveaux des bots (identifiants du protocole).
+const botLevels = ['facile', 'moyen', 'difficile'];
+
+String botLevelLabel(String? level) => switch (level) {
+      'facile' => 'Facile',
+      'difficile' => 'Difficile',
+      _ => 'Moyen',
+    };
 
 class RoomMsg {
   const RoomMsg({

@@ -25,6 +25,7 @@ void main() {
       'players': [
         {'id': 0, 'pseudo': 'Ana', 'connected': true, 'push': false},
         {'id': 1, 'pseudo': 'Bob', 'connected': false, 'push': true},
+        {'id': 2, 'pseudo': 'Ryuna', 'connected': true, 'push': false, 'isBot': true, 'level': 'difficile'},
       ],
       'ready': false,
       'started': false,
@@ -33,7 +34,11 @@ void main() {
     expect(m, isA<RoomMsg>());
     final r = m as RoomMsg;
     expect(r.code, 'K7M2QX');
-    expect(r.players, hasLength(2));
+    expect(r.players, hasLength(3));
+    expect(r.playerById(1)!.isBot, isFalse);
+    expect(r.playerById(2)!.isBot, isTrue);
+    expect(r.playerById(2)!.level, 'difficile');
+    expect(botLevelLabel(r.playerById(2)!.level), 'Difficile');
     expect(r.playerById(1)!.pseudo, 'Bob');
     expect(r.playerById(1)!.connected, isFalse);
     expect(r.you, 1);

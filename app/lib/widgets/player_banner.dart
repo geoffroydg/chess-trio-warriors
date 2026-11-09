@@ -4,6 +4,7 @@ import '../game/piece_component.dart';
 import '../models/protocol.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
+import 'common.dart';
 import 'turn_timer.dart';
 
 /// Bandeau des 3 joueurs ; celui au trait est mis en avant avec le minuteur.
@@ -29,6 +30,7 @@ class PlayerBanner extends StatelessWidget {
     final active = game.state.active[p];
     final turn = !game.over && game.turn == p;
     final connected = app.playerConnected(p);
+    final info = app.playerInfo(p);
     final avatar = Container(
       width: 40,
       height: 40,
@@ -97,6 +99,11 @@ class PlayerBanner extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
             ),
+            if (info != null && info.isBot)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: BotBadge(level: info.level, small: true),
+              ),
             if (!active)
               Container(
                 margin: const EdgeInsets.only(top: 2),

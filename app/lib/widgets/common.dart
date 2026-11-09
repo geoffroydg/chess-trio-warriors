@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../models/protocol.dart';
 import '../theme.dart';
 
 /// Fond dégradé commun à tous les écrans.
@@ -97,4 +98,26 @@ Future<bool> confirmDialog(BuildContext context,
     ),
   );
   return r ?? false;
+}
+
+/// Badge 🤖 + niveau affiché à côté du nom d'un bot.
+class BotBadge extends StatelessWidget {
+  const BotBadge({super.key, required this.level, this.small = false});
+  final String? level;
+  final bool small;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = botLevelLabel(level);
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: small ? 5 : 8, vertical: small ? 0 : 2),
+      decoration: BoxDecoration(
+        color: kBlue.withAlpha(60),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: kBlue.withAlpha(160)),
+      ),
+      child: Text('🤖 $label',
+          style: TextStyle(fontSize: small ? 10 : 13, fontWeight: FontWeight.w700)),
+    );
+  }
 }
