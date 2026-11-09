@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { RoomLogic, TURN_MS, FINISHED_TTL_MS, INACTIVITY_TTL_MS, CODE_ALPHABET, generateCode, BOT_DELAY_MIN_MS, BOT_DELAY_MAX_MS, BOT_NAMES } from '../src/room-logic.ts';
 import type { PushMessage, RoomData, ServerMessage } from '../src/room-logic.ts';
+import { customState } from '../../engine/src/index.ts';
 
 function rngFrom(seed: number): () => number {
   let a = seed >>> 0;
@@ -219,6 +220,46 @@ test('registerPush et notifications ciblées', async () => {
   // joueur 2 sans jeton : pas de notification pour lui
   await h.send(2, { type: 'registerPush', fcmToken: '' });
   assert.equal(h.last(2, 'error').code, 'badMessage');
+});
+
+test('promotion au choix : variantes dans legalMoves, champ promotion du message move', async () => {
+  const { h } = await fullRoom('twoMates');
+  for (const i of [0, 1, 2]) await h.send(i, { type: 'registerPush', fcmToken: `t${i}` });
+  await h.send(0, { type: 'start' });
+  // Position injectée : pion blanc ayant traversé le centre, prêt à promouvoir en 2b1.
+  h.stored!.state = customState('twoMates', [
+    { cell: '0d1', type: 'K', owner: 0 },
+    { cell: '2b2', type: 'P', owner: 0, crossed: true },
+    { cell: '1d1', type: 'K', owner: 1 },
+    { cell: '2d1', type: 'K', owner: 2 },
+  ]);
+  h.logic = h.mk();
+  await h.send(0, { type: 'move', from: '2b2', to: '2b1', promotion: 'K' });
+  assert.equal(h.last(0, 'error').code, 'illegalMove');
+  await h.send(0, { type: 'move', from: '2b2', to: '2b1', promotion: 'N' });
+  const g = h.last(1, 'game');
+  assert.equal(g.state.board.find((p: any) => p?.owner === 0 && p.type === 'N') !== undefined, true);
+  assert.equal(g.lastEvent.promotion, 'N');
+  assert.match(h.pushes.at(-1)![0].body, /promotion : cavalier/);
+  // Les coups légaux envoyés au client contiennent les 4 variantes ; sans champ promotion : dame.
+  h.stored!.state = customState('twoMates', [
+    { cell: '0d1', type: 'K', owner: 0 },
+    { cell: '1d1', type: 'K', owner: 1 },
+    { cell: '2d1', type: 'K', owner: 2 },
+    { cell: '0b2', type: 'P', owner: 2, crossed: true },
+  ], { turn: 2 });
+  h.logic = h.mk();
+  await h.send(2, { type: 'move', from: '2d1', to: '2c1' });
+  await h.send(0, { type: 'move', from: '0d1', to: '0e1' });
+  await h.send(1, { type: 'move', from: '1d1', to: '1c1' });
+  assert.deepEqual(h.inbox[2].filter((m) => m.type === 'error'), []);
+  const g4 = h.last(2, 'game');
+  assert.deepEqual(
+    g4.legalMoves.filter((m: any) => m.from === '0b2' && m.to === '0b1').map((m: any) => m.promotion).sort(),
+    ['B', 'N', 'Q', 'R'],
+  );
+  await h.send(2, { type: 'move', from: '0b2', to: '0b1' });
+  assert.equal(h.last(0, 'game').lastEvent.promotion, 'Q');
 });
 
 test('abandon : élimination et notification', async () => {

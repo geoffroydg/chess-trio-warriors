@@ -9,6 +9,7 @@ import {
   initialState,
   isCellAttacked,
   legalMoves,
+  status,
   randomMove,
   DEFAULT_BOT_CPU_MS,
   NODES_PER_MS,
@@ -81,11 +82,11 @@ test('moyen et difficile privilégient le mat', () => {
 
 test('facile prend une pièce gratuite (quand son tirage le décide)', () => {
   const s = customState('firstMate', [
-    { cell: '0e1', type: 'K', owner: 0 },
+    { cell: '0d1', type: 'K', owner: 0 },
     { cell: '0a1', type: 'R', owner: 0 },
-    { cell: '0a4', type: 'Q', owner: 1 },
-    { cell: '1e1', type: 'K', owner: 1 },
-    { cell: '2e1', type: 'K', owner: 2 },
+    { cell: '0a4', type: 'N', owner: 1 },
+    { cell: '1d1', type: 'K', owner: 1 },
+    { cell: '2d1', type: 'K', owner: 2 },
   ]);
   assert.deepEqual(botMove(s, 'facile', { rng: () => 0.1 }), { from: '0a1', to: '0a4', capture: true });
   // Sinon, coup aléatoire (légal).
@@ -94,15 +95,18 @@ test('facile prend une pièce gratuite (quand son tirage le décide)', () => {
 
 test('moyen ne laisse pas sa dame en prise', () => {
   const s = customState('firstMate', [
-    { cell: '0e1', type: 'K', owner: 0 },
+    { cell: '0d1', type: 'K', owner: 0 },
     { cell: '0d3', type: 'Q', owner: 0 },
     { cell: '0a2', type: 'P', owner: 0 },
     { cell: '0h2', type: 'P', owner: 0 },
-    { cell: '0c4', type: 'P', owner: 1 },
-    { cell: '1e1', type: 'K', owner: 1 },
-    { cell: '2e1', type: 'K', owner: 2 },
+    { cell: '0c4', type: 'P', owner: 1, crossed: true },
+    { cell: '0g3', type: 'R', owner: 2 },
+    { cell: '1d1', type: 'K', owner: 1 },
+    { cell: '2d1', type: 'K', owner: 2 },
   ]);
+  assert.deepEqual(status(s).checks, []);
   assert.ok(isCellAttacked(s, '0d3', 1));
+  assert.ok(isCellAttacked(s, '0d3', 2));
   for (let seed = 0; seed < 5; seed++) {
     const m = botMove(s, 'moyen', { rng: rngFrom(seed) });
     const after = applyMove(s, m);
@@ -143,6 +147,33 @@ test('budget de temps respecté, repli sur un coup légal, garde-fou si l\'horlo
   assert.ok(worst < DEFAULT_BOT_CPU_MS + 25, `pire temps ${worst.toFixed(1)} ms`);
   const custom = botDecision(initialState('twoMates'), 'difficile', { rng, timeBudgetMs: 3, now: () => 0 });
   assert.ok(custom.nodes <= 3 * NODES_PER_MS);
+});
+
+test('bots : promotion en dame, prise du roi emprisonné', () => {
+  const s = customState('firstMate', [
+    { cell: '0d1', type: 'K', owner: 0 },
+    { cell: '2b2', type: 'P', owner: 0, crossed: true },
+    { cell: '1d1', type: 'K', owner: 1 },
+    { cell: '2d1', type: 'K', owner: 2 },
+  ]);
+  for (const level of LEVELS) {
+    const m = botMove(s, level, { rng: rngFrom(2), now: () => 0 });
+    if (m.from === '2b2') assert.equal(m.promotion, 'Q');
+  }
+  // Roi 2 en échec hors de son tour : moyen et difficile le capturent (fin de partie en firstMate).
+  let p = customState('firstMate', [
+    { cell: '0d1', type: 'K', owner: 0 },
+    { cell: '2h4', type: 'N', owner: 0 },
+    { cell: '1a4', type: 'R', owner: 1 },
+    { cell: '1d1', type: 'K', owner: 1 },
+    { cell: '2g4', type: 'K', owner: 2 },
+    { cell: '2f4', type: 'P', owner: 2 },
+    { cell: '2h1', type: 'N', owner: 2 },
+  ]);
+  p = applyMove(p, { from: '2h4', to: '1a6' });
+  for (const level of ['moyen', 'difficile'] as BotLevel[]) {
+    assert.deepEqual(botMove(p, level, { rng: rngFrom(3), now: () => 0 }), { from: '1a4', to: '2g4', capture: true });
+  }
 });
 
 test('2 bots difficiles contre 1 facile : le facile gagne rarement', () => {

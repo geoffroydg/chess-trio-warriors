@@ -5,9 +5,9 @@
 // rester figée pendant un calcul synchrone, un plafond de nœuds proportionnel au budget sert de
 // garde-fou. Dans tous les cas un coup légal est rendu (repli : difficile → meilleur coup connu,
 // moyen → facile).
-import { applyInternal, attacks, findKing, legalInternal, toPublic } from './rules.ts';
+import { applyInternal, attacks, legalInternal, toPublic } from './rules.ts';
 import type { IMove } from './rules.ts';
-import { KING_ADJ, KNIGHT_ADJ, NUM_CELLS, PAWN_ATTACKERS, RAYS, rankOf, sectorOf } from './topology.ts';
+import { KING_ATTACKERS, KNIGHT_ATTACKERS, NUM_CELLS, NUM_DIRS, PAWN_ATTACKERS, RAYS, ringOf } from './board.ts';
 import type { GameState, Move, Piece, PieceType, Player } from './types.ts';
 
 export type BotLevel = 'facile' | 'moyen' | 'difficile';
@@ -45,9 +45,9 @@ export const LEVEL_PROFILES: Record<BotLevel, LevelProfile> = {
 
 /**
  * Garde-fou si l'horloge ne bouge pas : nœuds autorisés par ms de budget
- * (~25 µs par nœud génération + évaluation comprises, marge incluse).
+ * (~45 µs par nœud sur le plateau de 144 cases, génération + évaluation comprises).
  */
-export const NODES_PER_MS = 30;
+export const NODES_PER_MS = 20;
 
 export interface BotDecision {
   move: Move;
@@ -97,9 +97,13 @@ type Board = (Piece | null)[];
 // Évaluation
 // ---------------------------------------------------------------------------
 
+/** Prendre un roi « emprisonné » élimine son équipe. */
+const KING_TAKE = 5000;
+
 /** Valeur d'une pièce pour le preneur : une pièce gelée ne vaut rien. */
 function victimValue(state: GameState, pc: Piece | null): number {
-  return pc && state.active[pc.owner] ? VAL[pc.type] : 0;
+  if (!pc || !state.active[pc.owner]) return 0;
+  return pc.type === 'K' ? KING_TAKE : VAL[pc.type];
 }
 
 /** Nombre approximatif de cases accessibles (sans allocation ni test de légalité). */
@@ -113,7 +117,7 @@ function mobility(b: Board, p: Player): number {
       case 'K':
         break;
       case 'N':
-        for (const y of KNIGHT_ADJ[c]) {
+        for (const y of KNIGHT_ATTACKERS[c]) {
           const t = b[y];
           if (t === null || t.owner !== p) n++;
         }
@@ -121,16 +125,18 @@ function mobility(b: Board, p: Player): number {
       default: {
         const d0 = pc.type === 'B' ? 4 : 0;
         const d1 = pc.type === 'R' ? 4 : 8;
-        const rays = RAYS[c];
         for (let d = d0; d < d1; d++) {
-          for (const path of rays[d]) {
-            for (const y of path) {
-              const t = b[y];
-              if (t === null) n++;
-              else {
-                if (t.owner !== p) n++;
-                break;
-              }
+          const ray = RAYS[c * NUM_DIRS + d];
+          const cells = ray.cells;
+          // Les longues horizontales comptent peu : on plafonne chaque rayon à 6 cases.
+          const lim = Math.min(cells.length, 6);
+          for (let i = 0; i < lim; i++) {
+            if (ray.hilt[i] !== 0) break;
+            const t = b[cells[i]];
+            if (t === null) n++;
+            else {
+              if (t.owner !== p) n++;
+              break;
             }
           }
         }
@@ -141,29 +147,32 @@ function mobility(b: Board, p: Player): number {
 }
 
 /** Force d'un joueur actif : matériel, avance des pions, mobilité, sécurité du roi. */
-function strength(state: GameState, p: Player): number {
+function strength(state: GameState, p: Player, full: boolean): number {
   const b = state.board;
   let s = 0;
+  let k = -1;
   for (let c = 0; c < NUM_CELLS; c++) {
     const pc = b[c];
     if (pc === null || pc.owner !== p) continue;
     s += VAL[pc.type];
+    if (pc.type === 'K') k = c;
     if (pc.type === 'P') {
-      const r = rankOf(c);
-      s += sectorOf(c) === p ? (r - 1) * 6 : 30 + (3 - r) * 12;
+      // Avant le centre : anneaux 2 → 6 ; après : vers l'anneau 1 (promotion).
+      const r = ringOf(c);
+      s += pc.crossed ? 40 + (5 - r) * 14 : (r - 1) * 6;
     }
   }
   // Mobilité (coups pseudo-légaux) : peu coûteuse, et symétrique entre joueurs.
   s += 2 * mobility(b, p);
-  // Sécurité du roi : bouclier de pièces amies, cases voisines attaquées, échec.
-  const k = findKing(b, p);
+  // Sécurité du roi : bouclier de pièces amies, cases voisines attaquées (pour le bot
+  // lui-même seulement : c'est coûteux), échec.
   if (k >= 0) {
     let shield = 0;
     let danger = 0;
-    for (const y of KING_ADJ[k]) {
+    for (const y of KING_ATTACKERS[k]) {
       const pc = b[y];
       if (pc !== null && pc.owner === p) shield++;
-      for (const q of PLAYERS) if (q !== p && state.active[q] && attacks(b, y, q)) danger++;
+      else if (full) for (const q of PLAYERS) if (q !== p && state.active[q] && attacks(b, y, q)) danger++;
     }
     s += 10 * Math.min(shield, 4) - 8 * danger;
     for (const q of PLAYERS) if (q !== p && state.active[q] && attacks(b, k, q)) s -= 40;
@@ -176,10 +185,10 @@ function evaluate(state: GameState, me: Player, ply: number): number {
   const r = state.result;
   if (r) return r.winner === null ? 0 : r.winner === me ? WIN - ply : -WIN + ply;
   if (!state.active[me]) return -WIN + ply;
-  let v = strength(state, me);
+  let v = strength(state, me, true);
   for (const q of PLAYERS) {
     if (q === me) continue;
-    if (state.active[q]) v -= strength(state, q) / 2;
+    if (state.active[q]) v -= strength(state, q, false) / 2;
     else v += ELIM_BONUS;
   }
   return v;
@@ -188,28 +197,30 @@ function evaluate(state: GameState, me: Player, ply: number): number {
 /** Plus petite valeur d'une pièce de `by` (actif) qui attaque x, ou Infinity. */
 function leastAttacker(b: Board, x: number, by: Player): number {
   let best = Infinity;
-  for (const y of PAWN_ATTACKERS[by][x]) {
-    const pc = b[y];
-    if (pc && pc.owner === by && pc.type === 'P') return VAL.P;
+  for (let cr = 0; cr < 2; cr++) {
+    for (const y of PAWN_ATTACKERS[cr][x]) {
+      const pc = b[y];
+      if (pc && pc.owner === by && pc.type === 'P' && (pc.crossed ? 1 : 0) === cr) return VAL.P;
+    }
   }
-  for (const y of KNIGHT_ADJ[x]) {
+  for (const y of KNIGHT_ATTACKERS[x]) {
     const pc = b[y];
     if (pc && pc.owner === by && pc.type === 'N') best = Math.min(best, VAL.N);
   }
-  const rays = RAYS[x];
-  for (let d = 0; d < 8; d++) {
+  for (let d = 0; d < NUM_DIRS; d++) {
     const slider = d < 4 ? 'R' : 'B';
-    for (const path of rays[d]) {
-      for (const y of path) {
-        const pc = b[y];
-        if (pc === null) continue;
-        if (pc.owner === by && (pc.type === slider || pc.type === 'Q')) best = Math.min(best, VAL[pc.type]);
-        break;
-      }
+    const ray = RAYS[x * NUM_DIRS + d];
+    const cells = ray.cells;
+    for (let i = 0; i < cells.length; i++) {
+      if (ray.hilt[i] !== 0) break;
+      const pc = b[cells[i]];
+      if (pc === null) continue;
+      if (pc.owner === by && (pc.type === slider || pc.type === 'Q')) best = Math.min(best, VAL[pc.type]);
+      break;
     }
   }
   if (best === Infinity) {
-    for (const y of KING_ADJ[x]) {
+    for (const y of KING_ATTACKERS[x]) {
       const pc = b[y];
       if (pc && pc.owner === by && pc.type === 'K') return 2000;
     }
@@ -226,9 +237,14 @@ function threatBy(state: GameState, me: Player, opp: Player): number {
   let best = 0;
   for (let c = 0; c < NUM_CELLS; c++) {
     const pc = b[c];
-    if (pc === null || pc.owner !== me || pc.type === 'K') continue;
+    if (pc === null || pc.owner !== me) continue;
     const att = leastAttacker(b, c, opp);
     if (att === Infinity) continue;
+    if (pc.type === 'K') {
+      // Roi attaqué hors de son tour : l'adversaire peut le capturer (roi emprisonné).
+      best = Math.max(best, KING_TAKE);
+      continue;
+    }
     const v = VAL[pc.type];
     const gain = attacks(b, c, me) ? v - att : v;
     if (gain > best) best = gain;
@@ -335,7 +351,7 @@ const ZOB: Int32Array = (() => {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return t ^ (t >>> 14);
   };
-  const out = new Int32Array(NUM_CELLS * 18 * 2 + 16);
+  const out = new Int32Array(NUM_CELLS * 21 * 2 + 32);
   for (let i = 0; i < out.length; i++) out[i] = next();
   return out;
 })();
@@ -348,17 +364,20 @@ function hashState(s: GameState): number {
   for (let c = 0; c < NUM_CELLS; c++) {
     const pc = b[c];
     if (pc === null) continue;
-    const k = ((c * 18 + pc.owner * 6 + TYPE_IDX[pc.type]) << 1) | 0;
+    const t = pc.crossed ? 6 : TYPE_IDX[pc.type];
+    const k = ((c * 21 + pc.owner * 7 + t) << 1) | 0;
     h1 ^= ZOB[k];
     h2 ^= ZOB[k + 1];
   }
-  const base = NUM_CELLS * 36;
+  const base = NUM_CELLS * 42;
   h1 ^= ZOB[base + s.turn];
   for (const p of PLAYERS) if (s.active[p]) h2 ^= ZOB[base + 4 + p];
   for (const p of PLAYERS) {
     if (s.castling[p].king) h1 ^= ZOB[base + 8 + p];
     if (s.castling[p].queen) h2 ^= ZOB[base + 11 + p];
+    if (s.hilts[p]) h1 ^= ZOB[base + 14 + p];
   }
+  for (const e of s.enPassant) h2 ^= ZOB[base + 17 + (e.target.charCodeAt(0) - 48)] ^ ZOB[base + 20 + (e.target.charCodeAt(1) & 7)];
   return (h1 >>> 0) * 2097152 + (h2 >>> 11);
 }
 
@@ -366,7 +385,7 @@ interface TTEntry {
   depth: number;
   value: number;
   flag: 0 | 1 | 2; // 0 exact, 1 borne basse, 2 borne haute
-  best: number; // index (from*96+to) du meilleur coup, -1 sinon
+  best: number; // index (from*144+to) du meilleur coup, -1 sinon
 }
 
 const moveKey = (m: IMove) => m.from * NUM_CELLS + m.to;

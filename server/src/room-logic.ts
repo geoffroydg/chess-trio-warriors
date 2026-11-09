@@ -114,7 +114,9 @@ export function validatePassword(v: unknown): string | null {
   return typeof v === 'string' && v.length >= 1 && v.length <= 64 ? v : null;
 }
 
-const CELL_RE = /^[0-2][a-h][1-4]$/;
+const CELL_RE = /^[0-2][a-h][1-6]$/;
+const PROMOTIONS = ['Q', 'R', 'B', 'N'];
+const PROMO_NAMES: Record<string, string> = { Q: 'dame', R: 'tour', B: 'fou', N: 'cavalier' };
 
 export class RoomLogic {
   private data: RoomData | null = null;
@@ -130,6 +132,11 @@ export class RoomLogic {
     if (!this.loaded) {
       this.data = await this.deps.load();
       this.loaded = true;
+      // Salon d'une ancienne version du moteur (plateau de 96 cases) : incompatible, supprimé.
+      if (this.data?.state && (this.data.state as { version?: number }).version !== 2) {
+        this.data = null;
+        await this.deps.deleteAll();
+      }
     }
     return this.data;
   }
@@ -332,7 +339,12 @@ export class RoomLogic {
         if (d.state.result) return err('gameOver', 'La partie est terminée.');
         if (d.state.turn !== playerId) return err('notYourTurn', "Ce n'est pas ton tour.");
         if (typeof msg.from !== 'string' || typeof msg.to !== 'string' || !CELL_RE.test(msg.from) || !CELL_RE.test(msg.to)) return err('illegalMove', 'Coup invalide.');
-        const move = legalMoves(d.state).find((m) => m.from === msg.from && m.to === msg.to);
+        const promo = msg.promotion;
+        if (promo !== undefined && promo !== null && !PROMOTIONS.includes(promo as string)) return err('illegalMove', 'Promotion invalide.');
+        // Promotion : la variante demandée (dame si absente).
+        const move = legalMoves(d.state).find(
+          (m) => m.from === msg.from && m.to === msg.to && (!m.promotion || m.promotion === (promo ?? 'Q')),
+        );
         if (!move) return err('illegalMove', 'Coup illégal.');
         d.lastActivity = this.deps.now();
         await this.play(move, false);
@@ -547,7 +559,7 @@ export class RoomLogic {
     };
     const desc =
       ev.kind === 'move' && ev.move
-        ? `${name(ev.player)} : ${ev.move.from} → ${ev.move.to}${ev.captured ? ' (prise)' : ''}${auto ? ' (coup automatique)' : ''}`
+        ? `${name(ev.player)} : ${ev.move.from} → ${ev.move.to}${ev.captured ? ' (prise)' : ''}${ev.promotion ? ` (promotion : ${PROMO_NAMES[ev.promotion]})` : ''}${auto ? ' (coup automatique)' : ''}`
         : `${name(ev.player)} a abandonné`;
     const eliminated = (p: PlayerRecord) => before[p.id] && !st.active[p.id];
     if (st.result) {

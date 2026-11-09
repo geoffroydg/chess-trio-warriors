@@ -1,17 +1,17 @@
 import type { GameState, Move } from '../src/index.ts';
-import { legalMoves } from '../src/index.ts';
+import { cellAt, cellName, legalMoves } from '../src/index.ts';
 
-/** Cases d'arrivée des coups légaux depuis `from`, triées. */
+/** Cases d'arrivée des coups légaux depuis `from`, triées et dédoublonnées (variantes de promotion). */
 export function targets(state: GameState, from: string): string[] {
-  return legalMoves(state)
-    .filter((m) => m.from === from)
-    .map((m) => m.to)
-    .sort();
+  return [...new Set(legalMoves(state).filter((m) => m.from === from).map((m) => m.to))].sort();
 }
 
-export function mv(from: string, to: string): Move {
-  return { from, to };
+export function mv(from: string, to: string, promotion?: Move['promotion']): Move {
+  return promotion ? { from, to, promotion } : { from, to };
 }
+
+/** Nom de la case de colonne absolue w (0..23) et d'anneau 1..6. */
+export const at = (w: number, ring: number) => cellName(cellAt(w, ring - 1));
 
 /** Générateur pseudo-aléatoire déterministe (mulberry32). */
 export function rngFrom(seed: number): () => number {

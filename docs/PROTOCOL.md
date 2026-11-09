@@ -1,7 +1,13 @@
 # Protocole client ↔ serveur
 
 Le serveur est un Worker Cloudflare ; chaque salon est un Durable Object. Tout le trafic est du JSON.
-Les joueurs sont numérotés comme dans le moteur : 0 = Blanc (hôte), 1 = Rouge, 2 = Noir.
+Les joueurs sont numérotés comme dans le moteur : 0 = Blanc (hôte), 1 = Gris, 2 = Noir (dans l'app : or, cramoisi,
+violet). Ordre de jeu 0 → 1 → 2 (sens horaire sur le plateau).
+
+**Cases** (plateau rond de 144 cases, voir `docs/RULES.md`) : `"<équipe><colonne><anneau>"`, équipe `0`-`2`, colonne
+`a`-`h` (dans le sens trigonométrique), anneau `1`-`6` (1 = extérieur, 6 = bord du médaillon), ex. `"0d1"`. Index dans
+`state.board` : `équipe × 48 + (anneau − 1) × 8 + colonne`. La géométrie de rendu est dans `engine/geometry.json`
+(copiée dans `app/assets/geometry.json`, avec les 3 épées).
 
 ## 1. API HTTP
 
@@ -43,7 +49,7 @@ le serveur renvoie aussitôt `room` puis (si la partie a commencé) `game`.
 | `start` | — | Hôte uniquement, quand 3 joueurs (humains ou bots) sont présents : lance la partie. |
 | `addBot` | `seat?` (1 ou 2 ; défaut : premier siège libre), `level` (`facile` \| `moyen` \| `difficile`, défaut `moyen`) | Hôte uniquement, en salle d'attente : place un bot sur un siège libre. |
 | `removeBot` | `seat` | Hôte uniquement, en salle d'attente : retire le bot de ce siège (le siège redevient libre). |
-| `move` | `from`, `to` (cases, ex. `"0e2"`) | Joue un coup (au tour du joueur). Pour un roque, cases du roi. Promotion automatique en dame. |
+| `move` | `from`, `to` (cases, ex. `"0e2"`), `promotion?` (`Q` \| `R` \| `B` \| `N`) | Joue un coup (au tour du joueur). Pour un roque, cases du roi. Pour une promotion, la pièce choisie (absent = dame ; autre valeur : `illegalMove`). |
 | `resign` | — | Abandon : le joueur est éliminé (règles §8). |
 | `registerPush` | `fcmToken` (string, ≤ 4096 car.) | Enregistre le jeton FCM du joueur pour les notifications. Un même jeton n'est associé qu'à un siège par salon (il est retiré des autres sièges). |
 | `unregisterPush` | — | Supprime le jeton FCM du joueur dans ce salon. |
@@ -71,14 +77,26 @@ Envoyé à tous après `start` et après chaque coup / abandon / coup automatiqu
   "state": { "…GameState complet du moteur…" },
   "lastEvent": { "…GameEvent du moteur…", "auto": true },
   "turn": 1,
-  "legalMoves": [ { "from": "1e2", "to": "1e4" } ],
+  "legalMoves": [ { "from": "1e2", "to": "1e4" }, { "from": "1b2", "to": "1b1", "promotion": "N" } ],
   "turnDeadline": 1767225600000,
   "over": false, "result": null,
   "players": [ { "id": 0, "pseudo": "Ana", "connected": true, "push": false } ] }
 ```
 - `lastEvent` : celui du moteur (`state.lastEvent`) ; `auto: true` si le coup a été joué par le serveur après
   expiration des 60 s. `null` juste après `start`.
-- `turn` : joueur au trait (`null` si la partie est finie). `legalMoves` : ses coups légaux (vide si fini).
+- `turn` : joueur au trait (`null` si la partie est finie). `legalMoves` : ses coups légaux (vide si fini). Champs
+  facultatifs d'un coup : `capture`, `castle` (`king` = petit roque côté a, `queen` = grand roque côté h), `enPassant`,
+  `promotion`. Un coup de promotion apparaît **4 fois** (une par pièce : `Q`, `R`, `B`, `N`).
+- `state` (moteur, `version: 2`) : `board` (144 cases, `null` ou `{ type, owner, crossed? }` — `crossed: true` pour un
+  pion qui a traversé le centre), `hilts` (`[bool ×3]`, poignée de la frontière b ouverte), `enPassant`
+  (`[{ target, pawn, owner }]`), `turn`, `active`, `castling`, `ply`, `quietTurns`, `eliminations`, `result`…
+- `lastEvent` (moteur) : `kind`, `player`, `move`, `piece`, `captured` (`at` = case du pion pris en passant),
+  `promotion` (`Q`/`R`/`B`/`N` ou `null`), `castle`, `crossedCenter` (le coup traverse le médaillon), `enPassant`,
+  `kingCaptured` (équipe dont le roi « emprisonné » vient d'être capturé), `hiltsOpened` (frontières dont la poignée
+  vient de s'ouvrir), `checks`, `mates`, `eliminated`, `passes` (équipes pates qui ont passé), `blocked` (équipe
+  éliminée car aucune équipe ne pouvait jouer), `gameOver`.
+- Raisons de fin (`result.reason`) : `mate`, `blockade` (firstMate : aucune équipe ne peut jouer), `lastStanding`,
+  `fiftyMoves`, `repetition`, `stalemate`.
 - `turnDeadline` : timestamp ms (horloge serveur) de la fin du tour ; `null` si la partie est finie.
 - `result` : `{ winner: Player | null, reason }` du moteur quand `over`.
 
@@ -91,9 +109,9 @@ Envoyé à tous après `start` et après chaque coup / abandon / coup automatiqu
 
 ## 4. Règles de fonctionnement
 
-- Minuteur : 60 s par tour. À l'échéance, le serveur joue `randomMove` pour le joueur au trait, connecté ou non
+- Minuteur : 60 s par tour. À l'échéance, le serveur joue `randomMove` (promotion en dame) pour le joueur au trait, connecté ou non
   (`lastEvent.auto = true`). La partie continue même si des joueurs sont déconnectés ; seul `resign` élimine.
-- Bots : quand c'est au tour d'un bot, le serveur joue son coup (`botMove` du moteur, niveau du bot) après un délai
+- Bots : quand c'est au tour d'un bot, le serveur joue son coup (`botMove` du moteur, niveau du bot, promotion en dame) après un délai
   naturel de 1,2 à 2,5 s, que les humains soient connectés ou non. Un Durable Object n'a qu'une alarme : elle est
   toujours réglée sur l'échéance la plus proche (coup du bot, fin des 60 s, nettoyage du salon). Le coup d'un bot n'a
   pas `auto: true`. Les bots ne reçoivent ni messages ni notifications et n'abandonnent jamais.
