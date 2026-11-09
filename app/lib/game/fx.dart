@@ -7,6 +7,7 @@ import 'package:flame/game.dart';
 import 'package:flutter/animation.dart' show Curves;
 import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter/services.dart' show rootBundle;
+import 'perf.dart';
 import 'package:flutter/painting.dart' show TextPainter, TextSpan, TextStyle, FontWeight, FontStyle, TextDirection, Shadow;
 
 /// Textures d'effets (app/assets/fx, CC0) regroupées dans un atlas 8 x 128 px.
@@ -165,13 +166,30 @@ class SpriteBatch {
     _col[i] = argb;
   }
 
+  /// Ajoute une région quelconque de l'image du lot (atlas de guerriers) : [scale] uniforme,
+  /// coin haut-gauche de la région placé en (tx, ty).
+  void addRegion(double l, double t, double r, double b, double scale, double tx, double ty, int argb) {
+    if (length >= capacity || (argb >>> 24) == 0) return;
+    final i = length++;
+    _xf[i * 4] = scale;
+    _xf[i * 4 + 1] = 0;
+    _xf[i * 4 + 2] = tx;
+    _xf[i * 4 + 3] = ty;
+    _rc[i * 4] = l;
+    _rc[i * 4 + 1] = t;
+    _rc[i * 4 + 2] = r;
+    _rc[i * 4 + 3] = b;
+    _col[i] = argb;
+  }
+
   void addColor(Fx f, double x, double y, double size, ui.Color c, {double rot = 0, double alpha = 1}) {
     final a = (c.a * 255 * alpha).round().clamp(0, 255);
     add(f, x, y, size, (a << 24) | (c.toARGB32() & 0x00FFFFFF), rot: rot);
   }
 
-  /// Dessine puis vide le lot ; [additive] : mélange BlendMode.plus.
-  void flush(ui.Canvas canvas, {bool additive = true}) {
+  /// Dessine puis vide le lot ; [additive] : mélange BlendMode.plus ; [image] : autre atlas
+  /// que celui des effets (guerriers pré-rendus).
+  void flush(ui.Canvas canvas, {bool additive = true, ui.Image? image}) {
     final n = length;
     if (n == 0) return;
     final v = _views.putIfAbsent(n, () => (
@@ -180,7 +198,7 @@ class SpriteBatch {
           Int32List.sublistView(_col, 0, n),
         ));
     _paint.blendMode = additive ? ui.BlendMode.plus : ui.BlendMode.srcOver;
-    canvas.drawRawAtlas(FxAtlas.image, v.$1, v.$2, v.$3, ui.BlendMode.modulate, null, _paint);
+    canvas.drawRawAtlas(image ?? FxAtlas.image, v.$1, v.$2, v.$3, ui.BlendMode.modulate, null, _paint);
     length = 0;
   }
 }
@@ -215,6 +233,24 @@ class ParticlePool {
         _norm = SpriteBatch(capacity);
 
   final int capacity;
+
+  /// Nombre maximal de particules dessinées par image (budget).
+  int budget = 600;
+
+  /// Rectangle visible (monde) : les particules qui en sortent sont abandonnées, celles émises
+  /// hors champ ignorées. Null : pas de culling.
+  ui.Rect? cull;
+
+  /// Particules dessinées à la dernière image.
+  int drawn = 0;
+
+  bool _outside(double px, double py, double sz) {
+    final r = cull;
+    if (r == null) return false;
+    final m = sz * 4;
+    return px + m < r.left || px - m > r.right || py + m < r.top || py - m > r.bottom;
+  }
+
   final Float32List x, y, vx, vy, life, maxLife, size, gravity, rot, spin;
   final Int32List color;
   final Uint8List additive, sprite;
@@ -232,6 +268,7 @@ class ParticlePool {
 
   void emit(double px, double py, double pvx, double pvy, double lifeS, double sz, ui.Color c,
       {double g = 0, bool glow = true, Fx? fx}) {
+    if (_outside(px, py, sz)) return;
     final i = _next;
     _next = (_next + 1) % capacity;
     x[i] = px;
@@ -272,13 +309,17 @@ class ParticlePool {
       final drag = 1 - 1.5 * dt;
       vx[i] *= drag;
       vy[i] *= drag;
+      if (_outside(x[i], y[i], size[i])) life[i] = 0;
     }
   }
 
   void render(ui.Canvas canvas) {
+    var n = 0;
     for (var i = 0; i < capacity; i++) {
       final l = life[i];
       if (l <= 0) continue;
+      if (n >= budget) break;
+      n++;
       final k = l / maxLife[i];
       final argb = color[i];
       final a = (((argb >>> 24) & 0xFF) * math.min(1.0, k * 1.6)).round();
@@ -289,6 +330,7 @@ class ParticlePool {
       (additive[i] == 1 ? _add : _norm)
           .add(f, x[i], y[i], s, (a << 24) | (argb & 0x00FFFFFF), rot: rot[i]);
     }
+    drawn = n;
     _norm.flush(canvas, additive: false);
     _add.flush(canvas, additive: true);
   }
@@ -300,10 +342,41 @@ class ParticleLayer extends Component {
   final ParticlePool pool;
 
   @override
-  void update(double dt) => pool.update(dt);
+  void update(double dt) {
+    final t0 = PerfStats.now();
+    pool.update(dt);
+    PerfStats.add(PerfSub.fx, t0);
+  }
 
   @override
-  void render(ui.Canvas canvas) => pool.render(canvas);
+  void render(ui.Canvas canvas) {
+    final t0 = PerfStats.now();
+    pool.render(canvas);
+    PerfStats.add(PerfSub.fx, t0);
+  }
+}
+
+/// Effet non dessiné quand il sort du rectangle visible de la caméra (jeu [CullHost]).
+mixin ViewCulled on Component {
+  CullHost? _cullHost;
+  bool _cullLooked = false;
+
+  /// L'effet touche-t-il le rectangle [r] (coordonnées du parent, c.-à-d. du monde) ?
+  bool visibleIn(ui.Rect r);
+
+  @override
+  void renderTree(ui.Canvas canvas) {
+    if (!_cullLooked) {
+      _cullLooked = true;
+      final g = findGame();
+      if (g is CullHost) _cullHost = g as CullHost;
+    }
+    final r = PerfConfig.culling ? _cullHost?.cullRect : null;
+    if (r != null && !visibleIn(r)) return;
+    final t0 = PerfStats.now();
+    super.renderTree(canvas);
+    PerfStats.add(PerfSub.fx, t0);
+  }
 }
 
 /// Services d'effets partagés par le jeu et la galerie : particules, tremblement de caméra,
@@ -388,6 +461,7 @@ mixin FxHost on FlameGame {
     } else {
       super.render(canvas);
     }
+    PerfStats.endFrame();
   }
 }
 
@@ -469,7 +543,7 @@ class BannerText extends PositionComponent {
 }
 
 /// Anneau de choc au sol (ellipse aplatie qui s'étend) ; composant à usage unique.
-class ShockRing extends PositionComponent {
+class ShockRing extends PositionComponent with ViewCulled {
   ShockRing({
     required Vector2 center,
     required this.maxRadius,
@@ -485,6 +559,9 @@ class ShockRing extends PositionComponent {
   final double delay;
   double _t = 0;
   final ui.Paint _p = ui.Paint()..style = ui.PaintingStyle.stroke;
+
+  @override
+  bool visibleIn(ui.Rect r) => cullVisible(r, position.x, position.y, maxRadius * 1.2, maxRadius * 1.2);
 
   @override
   void update(double dt) {
@@ -519,7 +596,8 @@ class DebugFlags {
   static final ValueNotifier<bool> showFps = ValueNotifier(false);
 }
 
-/// Overlay de débogage : images/s lissées, temps d'image, particules vivantes.
+/// Overlay de débogage : images/s lissées, temps d'image, particules vivantes, temps CPU
+/// (mise à jour + dessin) par sous-système.
 class FpsOverlay extends Component {
   FpsOverlay(this.host) : super(priority: 1 << 30);
   final FxHost host;
@@ -541,8 +619,11 @@ class FpsOverlay extends Component {
     _worst = math.max(_worst, real);
     if (_acc >= 0.5 || _tp == null) {
       final fps = _acc > 0 ? _frames / _acc : 0;
+      String ms(PerfSub s) => PerfStats.avgMs(s).toStringAsFixed(2);
       final text = '${fps.toStringAsFixed(0)} img/s · pire ${(_worst * 1000).toStringAsFixed(1)} ms'
-          ' · ${host.pool.aliveCount} particules';
+          ' · ${host.pool.aliveCount} particules\n'
+          'CPU ms  fond ${ms(PerfSub.backdrop)} · plateau ${ms(PerfSub.board)}'
+          ' · pièces ${ms(PerfSub.pieces)} · fx ${ms(PerfSub.fx)}';
       _tp = TextPainter(
         text: TextSpan(
             text: text,

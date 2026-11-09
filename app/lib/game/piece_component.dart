@@ -7,6 +7,8 @@ import 'package:flutter/painting.dart' hide Gradient;
 import 'package:flutter/foundation.dart' show protected;
 
 import '../models/protocol.dart';
+import 'fx.dart' show ViewCulled;
+import 'perf.dart';
 
 /// Couleurs des trois camps (Blanc, Rouge, Noir).
 const playerColors = <ui.Color>[ui.Color(0xFFEAF1FF), ui.Color(0xFFFF5A3C), ui.Color(0xFF2B3358)];
@@ -32,6 +34,15 @@ abstract class PieceComponent extends PositionComponent {
 
   /// Roi en échec (aura rouge clignotante + vibration).
   bool inCheck = false;
+
+  /// Hors du rectangle visible de la caméra : non dessinée (et animation gelée ou ralentie).
+  bool culled = false;
+
+  /// Dessinée par la couche en lot (atlas de sprites) plutôt que par elle-même.
+  bool batched = false;
+
+  /// Nombre de rendus propres (tests du culling).
+  int renderCount = 0;
 
   /// Rayon de base (pixels) du pion à l'endroit où il se trouve (tient compte de la perspective).
   double radius = 10;
@@ -113,6 +124,22 @@ abstract class PieceComponent extends PositionComponent {
 
   @override
   void render(ui.Canvas canvas) => renderPiece(canvas, size);
+
+  @override
+  void renderTree(ui.Canvas canvas) {
+    if (culled || batched) return;
+    final t0 = PerfStats.now();
+    renderCount++;
+    super.renderTree(canvas);
+    PerfStats.add(PerfSub.pieces, t0);
+  }
+
+  @override
+  void updateTree(double dt) {
+    final t0 = PerfStats.now();
+    super.updateTree(dt);
+    PerfStats.add(PerfSub.pieces, t0);
+  }
 
   @override
   void update(double dt) {
@@ -198,13 +225,16 @@ class PlaceholderPieceComponent extends PieceComponent {
 }
 
 /// Éclat bref (prise de pièce) : anneau qui s'étend en s'estompant.
-class FlashComponent extends PositionComponent {
+class FlashComponent extends PositionComponent with ViewCulled {
   FlashComponent({required Vector2 center, required this.maxRadius, required this.color})
       : super(position: center, anchor: Anchor.center, priority: 100000);
   final double maxRadius;
   final ui.Color color;
   double _t = 0;
   static const duration = 0.4;
+
+  @override
+  bool visibleIn(ui.Rect r) => cullVisible(r, position.x, position.y, maxRadius * 2, maxRadius * 2);
 
   @override
   void update(double dt) {

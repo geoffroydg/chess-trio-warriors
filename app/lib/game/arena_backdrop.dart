@@ -4,15 +4,33 @@ import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
 
+import 'fx.dart';
+import 'perf.dart';
+
 /// Ciel de tournoi au crépuscule : dégradé, soleil bas, nuages, montagnes rocheuses
-/// lointaines, étoiles et poussière d'énergie. Tout est mis en cache à la taille de l'écran ;
-/// seules les positions des motifs mobiles sont recalculées à chaque image.
+/// lointaines, étoiles et poussière d'énergie. La partie statique est rastérisée une fois
+/// (asynchrone, avec une marge) et déplacée par simple translation (parallaxe de la caméra) ;
+/// la poussière est dessinée en un lot de sprites, coupée pendant un pan/zoom.
 class ArenaBackdrop extends PositionComponent {
   ArenaBackdrop() : super(priority: -2000);
 
   double _t = 0;
   ui.Picture? _static;
+  ui.Image? _image;
+  double _imageScale = 1;
+  int _gen = 0;
   ui.Size _picSize = ui.Size.zero;
+
+  /// Marge autour de l'écran (parallaxe).
+  double _margin = 0;
+
+  /// Décalage de parallaxe (pixels écran), réglé par le jeu selon la caméra.
+  ui.Offset parallax = ui.Offset.zero;
+
+  /// Coupe la poussière (pan/zoom en cours).
+  bool lite = false;
+  final SpriteBatch _dust = SpriteBatch(_n);
+  final ui.Paint _imgPaint = ui.Paint()..filterQuality = ui.FilterQuality.low;
   static const _n = 56;
   final Float32List _dx = Float32List(_n);
   final Float32List _dy = Float32List(_n);
@@ -34,8 +52,10 @@ class ArenaBackdrop extends PositionComponent {
     _build(size.x, size.y);
   }
 
-  void _build(double w, double h) {
-    if (w <= 0 || h <= 0) return;
+  void _build(double sw, double sh) {
+    if (sw <= 0 || sh <= 0) return;
+    _margin = math.max(sw, sh) * 0.04;
+    final w = sw + 2 * _margin, h = sh + 2 * _margin;
     _picSize = ui.Size(w, h);
     final rec = ui.PictureRecorder();
     final c = ui.Canvas(rec);
@@ -76,6 +96,7 @@ class ArenaBackdrop extends PositionComponent {
               const [ui.Color(0x66000000), ui.Color(0x00000000)], const [0, 1]));
     _static?.dispose();
     _static = rec.endRecording();
+    _rasterize(w, h);
 
     _sun = ui.Offset(w * 0.72, h * 0.66);
     _sunShader = ui.Gradient.radial(ui.Offset.zero, 1,
@@ -93,6 +114,41 @@ class ArenaBackdrop extends PositionComponent {
     }
   }
 
+  /// Rastérisation asynchrone de la partie statique (texture plafonnée).
+  void _rasterize(double w, double h) {
+    final pic = _static;
+    if (pic == null) return;
+    final gen = ++_gen;
+    final ratio = deviceRatio();
+    final k = math.min(ratio, PerfConfig.maxTexture / math.max(w, h));
+    final rec = ui.PictureRecorder();
+    ui.Canvas(rec)
+      ..scale(k)
+      ..drawPicture(pic);
+    final p2 = rec.endRecording();
+    p2.toImage((w * k).ceil(), (h * k).ceil()).then((img) {
+      p2.dispose();
+      if (gen != _gen || !isMounted) {
+        img.dispose();
+        return;
+      }
+      _image?.dispose();
+      _image = img;
+      _imageScale = k;
+    }, onError: (Object _) => p2.dispose());
+  }
+
+  /// Image statique prête (tests).
+  bool get cached => _image != null;
+
+  @override
+  void onRemove() {
+    _gen++;
+    _image?.dispose();
+    _image = null;
+    super.onRemove();
+  }
+
   void _mountains(ui.Canvas c, double w, double h, double base, double amp, ui.Color col, int seed) {
     final r = math.Random(seed * 31);
     final path = ui.Path()..moveTo(0, h);
@@ -107,6 +163,20 @@ class ArenaBackdrop extends PositionComponent {
       ..lineTo(w, h)
       ..close();
     c.drawPath(path, ui.Paint()..color = col);
+  }
+
+  @override
+  void updateTree(double dt) {
+    final t0 = PerfStats.now();
+    super.updateTree(dt);
+    PerfStats.add(PerfSub.backdrop, t0);
+  }
+
+  @override
+  void renderTree(ui.Canvas canvas) {
+    final t0 = PerfStats.now();
+    super.renderTree(canvas);
+    PerfStats.add(PerfSub.backdrop, t0);
   }
 
   @override
@@ -132,8 +202,18 @@ class ArenaBackdrop extends PositionComponent {
   void render(ui.Canvas canvas) {
     final pic = _static;
     if (pic == null) return;
-    // Le fond est dessiné en (0,0) dans l'espace du jeu.
-    canvas.drawPicture(pic);
+    // Le fond (marge comprise) est décalé de la marge et de la parallaxe.
+    canvas.save();
+    canvas.translate(-_margin + parallax.dx, -_margin + parallax.dy);
+    final img = _image;
+    if (img != null) {
+      canvas.save();
+      canvas.scale(1 / _imageScale);
+      canvas.drawImage(img, ui.Offset.zero, _imgPaint);
+      canvas.restore();
+    } else {
+      canvas.drawPicture(pic);
+    }
     final sh = _sunShader;
     if (sh != null) {
       canvas.save();
@@ -155,12 +235,15 @@ class ArenaBackdrop extends PositionComponent {
           ui.Rect.fromCenter(center: ui.Offset(_cx[i], _cy[i]), width: _cw[i], height: _cw[i] * 0.12),
           _p);
     }
-    _p.blendMode = ui.BlendMode.plus;
-    for (var i = 0; i < _n; i++) {
-      final tw = 0.5 + 0.5 * math.sin(_t * 2 + i * 1.3);
-      _p.color = ui.Color.fromARGB((50 + 90 * tw).round(), 255, 190, 110);
-      canvas.drawCircle(ui.Offset(_dx[i], _dy[i]), _ds[i], _p);
+    if (!lite) {
+      // Poussière d'énergie : un seul lot additif.
+      for (var i = 0; i < _n; i++) {
+        final tw = 0.5 + 0.5 * math.sin(_t * 2 + i * 1.3);
+        final a = (50 + 90 * tw).round();
+        _dust.add(Fx.glow, _dx[i], _dy[i], _ds[i] * 3.2, (a << 24) | 0x00FFBE6E);
+      }
+      _dust.flush(canvas);
     }
-    _p.blendMode = ui.BlendMode.srcOver;
+    canvas.restore();
   }
 }

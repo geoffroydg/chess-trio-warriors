@@ -12,14 +12,16 @@ import 'arena_backdrop.dart';
 import 'board_camera.dart';
 import 'attacks.dart';
 import 'fx.dart';
+import 'perf.dart';
 import 'piece_component.dart';
 import 'promotion_picker.dart';
 import 'round_board.dart';
 import 'warrior_art.dart';
+import 'warrior_atlas.dart';
 import 'warrior_piece.dart';
 
 /// Jeu Flame : plateau rond en vue inclinée (perspective), pièces, sélection et animations.
-class ChessGame extends FlameGame with FxHost implements BoardHost {
+class ChessGame extends FlameGame with FxHost implements BoardHost, CullHost, WarriorBatchHost {
   ChessGame({
     required this.geometry,
     required this.viewer,
@@ -103,14 +105,42 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
   bool get cameraSettled => boardCamera.settled;
 
   @override
+  bool get cameraMoving => !boardCamera.settled;
+
+  /// Rectangle visible (monde), marge comprise ; recalculé quand la caméra bouge.
+  @override
+  Rect? get cullRect => PerfConfig.culling ? _cull : null;
+  Rect? _cull;
+  int _cullVersion = -1;
+
+  /// Atlas des guerriers au repos et couche qui les dessine en lot.
+  final WarriorAtlas atlas = WarriorAtlas();
+  late final WarriorBatchLayer batchLayer = WarriorBatchLayer(this);
+
+  @override
+  WarriorAtlasData? get warriorAtlas => PerfConfig.spriteCache ? atlas.ready : null;
+
+  late final ArenaBackdrop backdrop = ArenaBackdrop();
+
+  /// Plus grand nombre de pixels (monde, vue entière) par unité d'art d'un guerrier.
+  double _maxArtPx = 1;
+
+  @override
   ui.Color backgroundColor() => const ui.Color(0x00000000);
 
   @override
   Future<void> onLoad() async {
-    await add(ArenaBackdrop());
+    await add(backdrop);
     await add(board);
     await add(worldLayer);
+    await worldLayer.add(batchLayer);
     await initFx();
+  }
+
+  @override
+  void onRemove() {
+    atlas.dispose();
+    super.onRemove();
   }
 
   @override
@@ -148,6 +178,11 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
         [for (final p in c.polygon) _toScreen(projection.projectOffset(p))],
     ];
     _screenCenters = [for (final c in geometry.cells) _toScreen(projection.project(c.x, c.y))];
+    _maxArtPx = 1;
+    for (final c in geometry.cells) {
+      _maxArtPx = math.max(_maxArtPx, pieceRadius(c.id) * 0.72);
+    }
+    _baseView = BoardView(geometry: geometry, projection: projection, scale: scale, origin: origin);
     boardCamera.setViewport(
         Size(size.x, size.y),
         Rect.fromLTWH(
@@ -177,6 +212,37 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
         origin: boardCamera.pan + origin * boardCamera.zoom);
     _appliedCamera = boardCamera.version;
     zoomed.value = boardCamera.zoomed;
+    // Parallaxe du fond : simple translation selon le centre de la vue.
+    final w = boardCamera.viewport.width, h = boardCamera.viewport.height;
+    final c = boardCamera.toWorld(Offset(w / 2, h / 2));
+    backdrop.parallax = Offset((w / 2 - c.dx) * 0.08, (h / 2 - c.dy) * 0.08);
+  }
+
+  BoardView? _baseView;
+
+  @override
+  BoardView? get baseView => _baseView;
+
+  /// Rectangle visible en coordonnées monde, élargi de [margin] (fraction de l'écran).
+  Rect visibleWorldRect({double margin = 0.08}) {
+    final v = boardCamera.viewport;
+    final a = boardCamera.toWorld(Offset.zero), b = boardCamera.toWorld(Offset(v.width, v.height));
+    final m = math.max(v.width, v.height) * margin / boardCamera.zoom;
+    return Rect.fromLTRB(a.dx - m, a.dy - m, b.dx + m, b.dy + m);
+  }
+
+  /// Marque les pièces hors champ (non dessinées, animation gelée/ralentie).
+  void _cullPieces() {
+    if (boardCamera.version != _cullVersion || _cull == null) {
+      _cullVersion = boardCamera.version;
+      _cull = visibleWorldRect();
+    }
+    final r = cullRect;
+    for (final p in _pieces.values) {
+      final rad = p.radius;
+      p.culled = !cullVisible(r, p.position.x, p.position.y - rad * 0.55, rad * 2.2, rad * 2.6);
+    }
+    pool.cull = r;
   }
 
   /// Retour à la vue entière (animé).
@@ -366,13 +432,25 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
 
   @override
   void update(double dt) {
+    // Caméra d'abord : le culling et l'allègement suivent la vue de cette image.
+    boardCamera.update(dt);
+    if (boardCamera.version != _appliedCamera) _applyCamera();
+    if (_laidOut) _cullPieces();
+    final moving = cameraMoving;
+    backdrop.lite = PerfConfig.gestureLite && moving;
+    if (PerfConfig.spriteCache && _laidOut) {
+      atlas.update(
+          needPpu: _maxArtPx * boardCamera.zoom * deviceRatio(), outlinePx: _maxArtPx, moving: moving);
+    }
+    batchLayer.pieces.clear();
+    for (final p in _pieces.values) {
+      if (p is WarriorPiece) batchLayer.pieces.add(p);
+    }
     super.update(dt);
     if (_pendingSync && _laidOut && isMounted) {
       _pendingSync = false;
       _sync(animate: false);
     }
-    boardCamera.update(dt);
-    if (boardCamera.version != _appliedCamera) _applyCamera();
   }
 
   void _sync({required bool animate}) {

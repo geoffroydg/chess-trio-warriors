@@ -7,6 +7,7 @@ import 'package:flutter/animation.dart' show Curves;
 import 'package:flutter/painting.dart';
 
 import '../models/geometry.dart';
+import 'perf.dart';
 
 /// Couleurs des trois joueurs sur le plateau (or, rouge, bleu).
 const boardPlayerColors = <Color>[Color(0xFFE9C25A), Color(0xFFE5533F), Color(0xFF4F93FF)];
@@ -545,60 +546,57 @@ class RoundBoardPainter {
     return path;
   }
 
+  // Médaillon : dégradés, tracés et pinceaux créés une fois (aucune allocation par image).
+  late final Shader _medHalo = ui.Gradient.radial(_center, _med * 0.8, const [
+    Color.fromRGBO(140, 220, 255, 0.55),
+    Color.fromRGBO(90, 120, 255, 0.20),
+    Color(0x00000000),
+  ], const [0, 0.55, 1]);
+  late final Shader _medArms = ui.Gradient.radial(_center, _med * 0.75, const [
+    Color.fromRGBO(255, 255, 255, 0.90),
+    Color.fromRGBO(120, 210, 255, 0.75),
+    Color.fromRGBO(80, 90, 255, 0.15),
+  ], const [0, 0.5, 1]);
+  late final Shader _medCore = ui.Gradient.radial(_center, _med * 0.18, const [
+    Color(0xFFFFFFFF),
+    Color.fromRGBO(140, 230, 255, 0.6),
+    Color(0x00000000),
+  ], const [0, 0.5, 1]);
+  late final Path _armsPath = _energyArms(_med, 0);
+  final Paint _mAdd = Paint()..blendMode = BlendMode.plus;
+  final Paint _mLine = Paint()..style = PaintingStyle.stroke;
+
   void paintMedallion(Canvas canvas, double time) {
     final m = _med;
     final pulse = 0.5 + 0.5 * math.sin(time * 2.2);
-    // Halo d'énergie.
-    canvas.drawCircle(
-      _center,
-      m * 0.8,
-      Paint()
-        ..blendMode = BlendMode.plus
-        ..shader = ui.Gradient.radial(_center, m * 0.8, [
-          Color.fromRGBO(140, 220, 255, 0.30 + 0.25 * pulse),
-          Color.fromRGBO(90, 120, 255, 0.10 + 0.10 * pulse),
-          const Color(0x00000000),
-        ], const [0, 0.55, 1]),
-    );
-    final arms = _energyArms(m, 4 * math.sin(time * 0.7));
-    canvas.drawPath(
-      arms,
-      Paint()
-        ..blendMode = BlendMode.plus
-        ..shader = ui.Gradient.radial(_center, m * 0.75, [
-          Color.fromRGBO(255, 255, 255, 0.55 + 0.35 * pulse),
-          Color.fromRGBO(120, 210, 255, 0.45 + 0.3 * pulse),
-          Color.fromRGBO(80, 90, 255, 0.15),
-        ], const [0, 0.5, 1]),
-    );
-    canvas.drawPath(
-      arms,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = m * 0.03
-        ..color = Color.fromRGBO(230, 205, 140, 0.55 + 0.3 * pulse),
-    );
+    // Halo d'énergie (opacité du pinceau modulée par la pulsation).
+    _mAdd
+      ..shader = _medHalo
+      ..color = Color.fromRGBO(255, 255, 255, (0.30 + 0.25 * pulse) / 0.55);
+    canvas.drawCircle(_center, m * 0.8, _mAdd);
+    // Bras d'énergie : tracé mis en cache, tourné par le canevas.
+    canvas.save();
+    canvas.translate(_center.dx, _center.dy);
+    canvas.rotate(-4 * math.sin(time * 0.7) * math.pi / 180);
+    canvas.translate(-_center.dx, -_center.dy);
+    _mAdd
+      ..shader = _medArms
+      ..color = Color.fromRGBO(255, 255, 255, (0.55 + 0.35 * pulse) / 0.9);
+    canvas.drawPath(_armsPath, _mAdd);
+    _mLine
+      ..strokeWidth = m * 0.03
+      ..color = Color.fromRGBO(230, 205, 140, 0.55 + 0.3 * pulse);
+    canvas.drawPath(_armsPath, _mLine);
+    canvas.restore();
     // Cœur.
-    canvas.drawCircle(
-      _center,
-      m * (0.13 + 0.03 * pulse),
-      Paint()
-        ..blendMode = BlendMode.plus
-        ..shader = ui.Gradient.radial(_center, m * 0.18, [
-          const Color(0xFFFFFFFF),
-          Color.fromRGBO(140, 230, 255, 0.6),
-          const Color(0x00000000),
-        ], const [0, 0.5, 1]),
-    );
+    _mAdd
+      ..shader = _medCore
+      ..color = const Color(0xFFFFFFFF);
+    canvas.drawCircle(_center, m * (0.13 + 0.03 * pulse), _mAdd);
+    _mAdd.shader = null;
     // Anneau gravé qui s'illumine.
-    canvas.drawCircle(
-      _center,
-      m * 0.86,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = m * 0.03
-        ..color = Color.fromRGBO(120, 210, 255, 0.15 + 0.35 * pulse),
-    );
+    _mLine.color = Color.fromRGBO(120, 210, 255, 0.15 + 0.35 * pulse);
+    canvas.drawCircle(_center, m * 0.86, _mLine);
   }
 
   /// Traînée lumineuse d'un coup qui traverse le médaillon : départ → centre → arrivée
@@ -632,15 +630,21 @@ class RoundBoardPainter {
     if (head - tail <= 1e-6) return;
     final seg = m.extractPath(tail, head);
     final alpha = 1 - fading;
+    // Lueur sans flou par image : deux traits larges et transparents superposés.
+    final glow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..blendMode = BlendMode.plus;
     canvas.drawPath(
         seg,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round
+        glow
+          ..strokeWidth = r * 0.08
+          ..color = color.withValues(alpha: 0.16 * alpha));
+    canvas.drawPath(
+        seg,
+        glow
           ..strokeWidth = r * 0.045
-          ..blendMode = BlendMode.plus
-          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.018)
-          ..color = color.withValues(alpha: 0.55 * alpha));
+          ..color = color.withValues(alpha: 0.38 * alpha));
     canvas.drawPath(
         seg,
         Paint()
@@ -687,15 +691,21 @@ class RoundBoardPainter {
     final a = BoardView.polar(sw.bladeR0, sw.angle);
     final b = BoardView.polar(sw.hiltR1, sw.angle);
     final pulse = 0.6 + 0.4 * math.sin(age * 14);
+    final glow = Paint()
+      ..strokeCap = StrokeCap.round
+      ..blendMode = BlendMode.plus;
     canvas.drawLine(
         a,
         b,
-        Paint()
-          ..strokeWidth = r * 0.06 * k
-          ..strokeCap = StrokeCap.round
-          ..blendMode = BlendMode.plus
-          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.02)
-          ..color = Color.fromRGBO(110, 230, 255, 0.7 * k * pulse));
+        glow
+          ..strokeWidth = r * 0.1 * k
+          ..color = Color.fromRGBO(110, 230, 255, 0.22 * k * pulse));
+    canvas.drawLine(
+        a,
+        b,
+        glow
+          ..strokeWidth = r * 0.05 * k
+          ..color = Color.fromRGBO(110, 230, 255, 0.5 * k * pulse));
     for (var i = 0; i < 2; i++) {
       final e = Curves.easeOutCubic.transform(((u * 1.6) - i * 0.25).clamp(0.0, 1.0));
       canvas.drawCircle(
@@ -721,6 +731,13 @@ class RoundBoardPainter {
     }
   }
 
+  final Paint _hFill = Paint();
+  final Paint _hLine = Paint()..style = PaintingStyle.stroke;
+  final Paint _hGlow = Paint()..blendMode = BlendMode.plus;
+  Shader? _targetShader;
+
+  /// Surlignages (dernier coup, échec, sélection, destinations). [visible] : culling des
+  /// cases hors champ (null : toutes dessinées).
   void paintHighlights(
     Canvas canvas, {
     required double time,
@@ -730,79 +747,70 @@ class RoundBoardPainter {
     String? lastFrom,
     String? lastTo,
     Iterable<String> checked = const [],
+    bool Function(String id)? visible,
   }) {
     final r = _r;
     final pulse = 0.5 + 0.5 * math.sin(time * 6);
     Path pathOf(String id) => paths[BoardGeometry.cellIndexOf(id)];
+    bool shown(String id) => visible == null || visible(id);
+    void cell(String id, Color fill, double width, Color line) {
+      _hFill.color = fill;
+      canvas.drawPath(pathOf(id), _hFill);
+      _hLine
+        ..strokeWidth = width
+        ..color = line;
+      canvas.drawPath(pathOf(id), _hLine);
+    }
 
-    for (final id in [lastFrom, lastTo]) {
-      if (id == null) continue;
-      canvas.drawPath(pathOf(id), Paint()..color = const Color(0x66FFB23D));
-      canvas.drawPath(
-          pathOf(id),
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = r * 0.006
-            ..color = const Color(0xAAFFC266));
-    }
+    if (lastFrom != null && shown(lastFrom)) cell(lastFrom, const Color(0x66FFB23D), r * 0.006, const Color(0xAAFFC266));
+    if (lastTo != null && shown(lastTo)) cell(lastTo, const Color(0x66FFB23D), r * 0.006, const Color(0xAAFFC266));
     for (final id in checked) {
-      canvas.drawPath(pathOf(id), Paint()..color = Color.fromRGBO(255, 40, 40, 0.30 + 0.35 * pulse));
-      canvas.drawPath(
-          pathOf(id),
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = r * 0.012
-            ..color = Color.fromRGBO(255, 90, 70, 0.6 + 0.4 * pulse));
+      if (!shown(id)) continue;
+      cell(id, Color.fromRGBO(255, 40, 40, 0.30 + 0.35 * pulse), r * 0.012,
+          Color.fromRGBO(255, 90, 70, 0.6 + 0.4 * pulse));
     }
-    if (selected != null) {
-      canvas.drawPath(pathOf(selected), Paint()..color = const Color(0x7035E0FF));
-      canvas.drawPath(
-          pathOf(selected),
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = r * 0.012
-            ..color = const Color(0xFF6FF0FF));
+    if (selected != null && shown(selected)) {
+      cell(selected, const Color(0x7035E0FF), r * 0.012, const Color(0xFF6FF0FF));
     }
+    // Halo des destinations : un dégradé unitaire partagé, mis à l'échelle par le canevas.
+    final sh = _targetShader ??= ui.Gradient.radial(Offset.zero, 1, const [
+      Color.fromRGBO(255, 210, 110, 0.85),
+      Color.fromRGBO(255, 140, 40, 0.30),
+      Color(0x00000000),
+    ], const [0, 0.45, 1]);
     for (final id in targets) {
+      if (!shown(id)) continue;
       final c = geometry.byId(id);
       final capture = isCapture?.call(id) ?? false;
-      final at = Offset(c.x, c.y);
       if (capture) {
-        canvas.drawPath(pathOf(id), Paint()..color = Color.fromRGBO(255, 60, 60, 0.22 + 0.12 * pulse));
-        canvas.drawPath(
-            pathOf(id),
-            Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = r * 0.012
-              ..color = const Color(0xFFFF5A4D));
+        cell(id, Color.fromRGBO(255, 60, 60, 0.22 + 0.12 * pulse), r * 0.012, const Color(0xFFFF5A4D));
       } else {
         final size = math.min(c.r1 - c.r0, (c.r0 + c.r1) / 2 * math.pi / 12);
         final rad = size * (0.22 + 0.03 * pulse);
-        canvas.drawCircle(
-          at,
-          rad * 2.2,
-          Paint()
-            ..blendMode = BlendMode.plus
-            ..shader = ui.Gradient.radial(at, rad * 2.2, [
-              Color.fromRGBO(255, 210, 110, 0.85),
-              Color.fromRGBO(255, 140, 40, 0.30),
-              const Color(0x00000000),
-            ], const [0, 0.45, 1]),
-        );
-        canvas.drawCircle(at, rad * 0.75, Paint()..color = const Color(0xFFFFE2A0));
+        canvas.save();
+        canvas.translate(c.x, c.y);
+        canvas.scale(rad * 2.2);
+        _hGlow.shader = sh;
+        canvas.drawCircle(Offset.zero, 1, _hGlow);
+        canvas.restore();
+        _hFill.color = const Color(0xFFFFE2A0);
+        canvas.drawCircle(Offset(c.x, c.y), rad * 0.75, _hFill);
       }
     }
   }
 }
 
-/// Composant Flame du plateau rond : couche statique pré-rendue en image, médaillon et
-/// surlignages redessinés à chaque image.
+/// Composant Flame du plateau rond : couche statique pré-rendue (image de base asynchrone +
+/// tuiles haute résolution des zones visibles), médaillon et surlignages redessinés à chaque
+/// image (cases hors champ ignorées).
 class BoardComponent extends PositionComponent {
   BoardComponent(this.host) : super(position: Vector2.zero());
 
   final BoardHost host;
   double _time = 0;
   RoundBoardPainter? _painter;
+
+  // --- Mode historique (PerfConfig.asyncBoard faux) : image re-rendue en toImageSync. ---
   ui.Image? _image;
   ui.Picture? _picture;
   Float64List? _builtFor;
@@ -810,6 +818,41 @@ class BoardComponent extends PositionComponent {
   List<bool> _builtHilts = const [];
   double _builtRatio = 0;
   BoardView? _builtView;
+
+  // --- Mode asynchrone : Picture de la couche statique enregistrée une fois pour la vue
+  // entière, image de base rastérisée en asynchrone (texture plafonnée), tuiles haute
+  // résolution des zones visibles re-rendues à l'arrêt du geste et affichées en fondu. ---
+  ui.Picture? _basePic;
+  BoardView? _baseView;
+  Rect _baseBounds = Rect.zero;
+  ui.Image? _baseImg;
+  double _baseDensity = 1;
+  int _contentGen = 0;
+  List<_BoardTile> _tiles = const [];
+  BoardView? _tilesView;
+  List<_BoardTile> _oldTiles = const [];
+  BoardView? _oldTilesView;
+  double _fade = 1;
+  bool _tilesBuilding = false;
+  int _tileGen = 0;
+  final Paint _imgPaint = Paint()..filterQuality = FilterQuality.medium;
+  final Paint _baseImgPaint = Paint()..filterQuality = FilterQuality.low;
+  final Paint _tilePaint = Paint()
+    ..filterQuality = FilterQuality.low
+    ..isAntiAlias = false;
+
+  /// Taille (pixels physiques) d'une tuile.
+  static const int tilePx = PerfConfig.maxTexture ~/ 2;
+  static const double fadeSeconds = 0.18;
+
+  /// Tuiles haute résolution construites (tests).
+  int tileBuilds = 0;
+  int get tileCount => _tiles.length;
+
+  /// Enregistrements de la couche statique (tests).
+  int get contentBuilds => _contentGen;
+  bool get baseCached => _baseImg != null;
+  bool get tilesPending => _tilesBuilding;
 
   final List<({String from, String to, double start, Color color})> _trails = [];
   final Map<int, double> _flashes = {};
@@ -828,22 +871,40 @@ class BoardComponent extends PositionComponent {
   RoundBoardPainter get painter => _painter ??= RoundBoardPainter(host.geometry);
 
   @override
+  void updateTree(double dt) {
+    final t0 = PerfStats.now();
+    super.updateTree(dt);
+    PerfStats.add(PerfSub.board, t0);
+  }
+
+  @override
+  void renderTree(Canvas canvas) {
+    final t0 = PerfStats.now();
+    super.renderTree(canvas);
+    PerfStats.add(PerfSub.board, t0);
+  }
+
+  @override
   void update(double dt) {
     _time += dt;
     _trails.removeWhere((t) => _time - t.start > RoundBoardPainter.trailDraw + RoundBoardPainter.trailFade);
     _flashes.removeWhere((_, t) => _time - t > RoundBoardPainter.hiltFlashLife);
+    if (_fade < 1) {
+      _fade = math.min(1, _fade + dt / fadeSeconds);
+      if (_fade >= 1) _disposeTiles(_oldTiles);
+      if (_fade >= 1) _oldTiles = const [];
+    }
   }
 
   /// Force la reconstruction de la couche statique (mise en page, joueurs gelés).
-  void invalidate() => _builtFor = null;
-
-  double get _ratio {
-    try {
-      return ui.PlatformDispatcher.instance.views.first.devicePixelRatio.clamp(1.0, 3.0);
-    } catch (_) {
-      return 2;
-    }
+  void invalidate() {
+    _builtFor = null;
+    _baseView = null;
   }
+
+  double get _ratio => deviceRatio();
+
+  // ------------------------------------------------------------------ mode historique
 
   void _ensureStatic(BoardView v) {
     final active = host.activePlayers;
@@ -889,6 +950,265 @@ class BoardComponent extends PositionComponent {
     _builtRatio = ratio;
   }
 
+  void _renderLegacy(Canvas canvas, BoardView v) {
+    _ensureStatic(v);
+    final img = _image;
+    final bv = _builtView;
+    canvas.save();
+    if (bv != null && bv.scale != v.scale || bv != null && bv.origin != v.origin) {
+      _transformBetween(canvas, bv, v);
+    }
+    if (img != null) {
+      final ratio = _builtRatio;
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Rect.fromLTWH(0, 0, img.width / ratio, img.height / ratio),
+        _imgPaint,
+      );
+    } else if (_picture != null) {
+      canvas.drawPicture(_picture!);
+    }
+    canvas.restore();
+  }
+
+  // ------------------------------------------------------------------ mode asynchrone
+
+  /// Transformation affine entre deux vues du plateau (même projection).
+  static void _transformBetween(Canvas canvas, BoardView from, BoardView to) {
+    final k = to.scale / from.scale;
+    canvas.translate(to.origin.dx, to.origin.dy);
+    canvas.scale(k);
+    canvas.translate(-from.origin.dx, -from.origin.dy);
+  }
+
+  void _ensureContent(BoardView v) {
+    final b = host.baseView ?? v;
+    final active = host.activePlayers;
+    final hilts = host.hilts;
+    final bv = _baseView;
+    if (_basePic != null &&
+        bv != null &&
+        bv.scale == b.scale &&
+        bv.origin == b.origin &&
+        _boolsEq(_builtActive, active) &&
+        _boolsEq(_builtHilts, hilts)) {
+      return;
+    }
+    _contentGen++;
+    _basePic?.dispose();
+    final rec = ui.PictureRecorder();
+    painter.paintStatic(Canvas(rec), b, active: active, hilts: hilts);
+    _basePic = rec.endRecording();
+    _baseView = b;
+    _baseBounds = Rect.fromPoints(Offset.zero, Offset(size.x, size.y));
+    _builtActive = List.of(active);
+    _builtHilts = List.of(hilts);
+    // Contenu changé : l'ancienne image de base n'est plus valable (la Picture la remplace
+    // jusqu'à la nouvelle rastérisation), les tuiles non plus.
+    _baseImg?.dispose();
+    _baseImg = null;
+    _disposeTiles(_tiles);
+    _disposeTiles(_oldTiles);
+    _tiles = const [];
+    _oldTiles = const [];
+    _tilesView = null;
+    _cancelTiles();
+    _rasterizeBase();
+  }
+
+  void _rasterizeBase() {
+    final pic = _basePic;
+    if (pic == null || size.x <= 0 || size.y <= 0) return;
+    final gen = _contentGen;
+    final d = math.min(_ratio, PerfConfig.maxTexture / math.max(size.x, size.y));
+    final rec = ui.PictureRecorder();
+    Canvas(rec)
+      ..scale(d)
+      ..drawPicture(pic);
+    final p2 = rec.endRecording();
+    p2.toImage((size.x * d).ceil(), (size.y * d).ceil()).then((img) {
+      p2.dispose();
+      if (gen != _contentGen || !isMounted) {
+        img.dispose();
+        return;
+      }
+      _baseImg?.dispose();
+      _baseImg = img;
+      _baseDensity = d;
+    }, onError: (Object _) => p2.dispose());
+  }
+
+  /// Densité nécessaire (pixels physiques par pixel de la vue entière) pour la vue [v].
+  double _needDensity(BoardView v) => _ratio * v.scale / _baseView!.scale;
+
+  void _maybeBuildTiles(BoardView v) {
+    if (_tilesBuilding) {
+      // Le geste reprend : la construction en cours est abandonnée (re-rendu à l'arrêt).
+      if (!host.cameraSettled) _cancelTiles();
+      return;
+    }
+    if (!host.cameraSettled || _baseImg == null) return;
+    final have = _baseDensity;
+    if (_needDensity(v) <= have * 1.05) {
+      // Vue entière nette : les tuiles ne servent plus.
+      if (_tiles.isNotEmpty && _fade >= 1) {
+        _disposeTiles(_tiles);
+        _tiles = const [];
+        _tilesView = null;
+      }
+      return;
+    }
+    final tv = _tilesView;
+    if (tv != null && tv.scale == v.scale && tv.origin == v.origin) return;
+    _buildTiles(v);
+  }
+
+  // Construction en cours : rectangles restants (du centre vers les bords), tuiles prêtes.
+  final List<Rect> _pending = [];
+  final List<_BoardTile> _ready = [];
+  BoardView? _buildingView;
+  bool _tileInFlight = false;
+
+  void _cancelTiles() {
+    _tileGen++;
+    _tilesBuilding = false;
+    _tileInFlight = false;
+    _pending.clear();
+    _disposeTiles(_ready);
+    _ready.clear();
+  }
+
+  /// Re-rendu haute résolution des seules tuiles visibles de la vue [v] : une tuile par
+  /// image (asynchrone, toImage), puis remplacement en fondu quand toutes sont prêtes.
+  void _buildTiles(BoardView v) {
+    final b = _baseView;
+    if (_basePic == null || b == null) return;
+    final ratio = _ratio;
+    // Emprise du plateau dans la vue v, limitée à l'écran.
+    final k = v.scale / b.scale;
+    final bb = _baseBounds;
+    final area = Rect.fromLTRB(v.origin.dx + (bb.left - b.origin.dx) * k, v.origin.dy + (bb.top - b.origin.dy) * k,
+            v.origin.dx + (bb.right - b.origin.dx) * k, v.origin.dy + (bb.bottom - b.origin.dy) * k)
+        .intersect(Rect.fromLTWH(0, 0, size.x, size.y));
+    if (area.width <= 0 || area.height <= 0) return;
+    _cancelTiles();
+    // Grille alignée sur les pixels physiques : chaque tuile est dessinée à l'échelle 1 (pas
+    // de couture visible).
+    final x0 = (area.left * ratio).floor(), y0 = (area.top * ratio).floor();
+    final x1 = (area.right * ratio).ceil(), y1 = (area.bottom * ratio).ceil();
+    for (var y = y0; y < y1; y += tilePx) {
+      for (var x = x0; x < x1; x += tilePx) {
+        _pending.add(Rect.fromLTRB(
+            x / ratio, y / ratio, math.min(x + tilePx, x1) / ratio, math.min(y + tilePx, y1) / ratio));
+      }
+    }
+    final mid = area.center;
+    _pending.sort((p, q) => (q.center - mid).distanceSquared.compareTo((p.center - mid).distanceSquared));
+    _buildingView = v;
+    _tilesBuilding = true;
+    tileBuilds++;
+  }
+
+  /// Lance la tuile suivante (au plus une en vol à la fois).
+  void _stepTiles() {
+    if (!_tilesBuilding || _tileInFlight) return;
+    final pic = _basePic, b = _baseView, v = _buildingView;
+    if (pic == null || b == null || v == null) return;
+    if (_pending.isEmpty) {
+      _disposeTiles(_oldTiles);
+      _oldTiles = _tiles;
+      _oldTilesView = _tilesView;
+      _tiles = List.of(_ready);
+      _ready.clear();
+      _tilesView = v;
+      _fade = 0;
+      _tilesBuilding = false;
+      return;
+    }
+    final r = _pending.removeLast();
+    final ratio = _ratio;
+    final rec = ui.PictureRecorder();
+    final c = Canvas(rec)
+      ..scale(ratio)
+      ..translate(-r.left, -r.top);
+    _transformBetween(c, b, v);
+    c.drawPicture(pic);
+    final p = rec.endRecording();
+    final gen = _tileGen;
+    _tileInFlight = true;
+    p.toImage(math.max(1, (r.width * ratio).round()), math.max(1, (r.height * ratio).round())).then((img) {
+      p.dispose();
+      if (gen != _tileGen || !isMounted) {
+        img.dispose();
+        return;
+      }
+      _tileInFlight = false;
+      _ready.add(_BoardTile(img, r));
+    }, onError: (Object _) {
+      p.dispose();
+      if (gen == _tileGen) _cancelTiles();
+    });
+  }
+
+  static void _disposeTiles(List<_BoardTile> tiles) {
+    for (final t in tiles) {
+      t.image.dispose();
+    }
+  }
+
+  void _drawTiles(Canvas canvas, List<_BoardTile> tiles, BoardView from, BoardView v, double alpha) {
+    if (tiles.isEmpty || alpha <= 0) return;
+    canvas.save();
+    _transformBetween(canvas, from, v);
+    final k = v.scale / from.scale;
+    _tilePaint.color = Color.fromARGB((alpha * 255).round(), 255, 255, 255);
+    for (final t in tiles) {
+      final d = t.dst;
+      // Tuile hors de l'écran dans la vue courante : ignorée.
+      final l = v.origin.dx + (d.left - from.origin.dx) * k, r = v.origin.dx + (d.right - from.origin.dx) * k;
+      final tp = v.origin.dy + (d.top - from.origin.dy) * k, bt = v.origin.dy + (d.bottom - from.origin.dy) * k;
+      if (r < 0 || l > size.x || bt < 0 || tp > size.y) continue;
+      canvas.drawImageRect(t.image, t.src, d, _tilePaint);
+    }
+    canvas.restore();
+  }
+
+  /// Les tuiles prêtes couvrent tout l'écran pour la vue courante : la base est inutile.
+  bool _tilesCover(BoardView v) {
+    final tv = _tilesView;
+    return _fade >= 1 && tv != null && tv.scale == v.scale && tv.origin == v.origin && _tiles.isNotEmpty;
+  }
+
+  void _renderAsync(Canvas canvas, BoardView v) {
+    _ensureContent(v);
+    final b = _baseView!;
+    _maybeBuildTiles(v);
+    _stepTiles();
+    final tv = _tilesView;
+    if (_tilesCover(v)) {
+      _drawTiles(canvas, _tiles, tv!, v, 1);
+      return;
+    }
+    canvas.save();
+    _transformBetween(canvas, b, v);
+    final img = _baseImg;
+    if (img != null) {
+      canvas.save();
+      canvas.scale(1 / _baseDensity);
+      canvas.drawImage(img, Offset.zero, _baseImgPaint);
+      canvas.restore();
+    } else {
+      canvas.drawPicture(_basePic!);
+    }
+    canvas.restore();
+    final ov = _oldTilesView;
+    if (ov != null && _fade < 1) _drawTiles(canvas, _oldTiles, ov, v, 1);
+    if (tv != null) _drawTiles(canvas, _tiles, tv, v, _fade);
+  }
+
+  // ------------------------------------------------------------------ couche animée
+
   static bool _boolsEq(List<bool> a, List<bool> b) {
     if (a.length != b.length) return false;
     for (var i = 0; i < a.length; i++) {
@@ -904,36 +1224,40 @@ class BoardComponent extends PositionComponent {
     return true;
   }
 
+  BoardView? _view;
+  late final bool Function(String id) _visibleFn = _cellVisible;
+
+  /// Case visible à l'écran (marge d'une demi-case) ?
+  bool _cellVisible(String id) {
+    final v = _view;
+    if (v == null || !PerfConfig.culling) return true;
+    final c = host.geometry.byId(id);
+    final p = v.toScreen(c.x, c.y);
+    final m = v.scale * 0.08;
+    return p.dx >= -m && p.dy >= -m && p.dx <= size.x + m && p.dy <= size.y + m;
+  }
+
+  bool _pointVisible(BoardView v, double nx, double ny, double radius) {
+    if (!PerfConfig.culling) return true;
+    final p = v.toScreen(nx, ny);
+    final m = v.scale * radius;
+    return p.dx >= -m && p.dy >= -m && p.dx <= size.x + m && p.dy <= size.y + m;
+  }
+
   @override
   void render(Canvas canvas) {
     final v = host.boardView;
     if (v == null) return;
-    _ensureStatic(v);
-    final img = _image;
-    final bv = _builtView;
-    canvas.save();
-    if (bv != null && bv.scale != v.scale || bv != null && bv.origin != v.origin) {
-      // Transformation affine entre l'image pré-rendue et la vue courante.
-      final k = v.scale / bv.scale;
-      canvas.translate(v.origin.dx, v.origin.dy);
-      canvas.scale(k);
-      canvas.translate(-bv.origin.dx, -bv.origin.dy);
+    if (PerfConfig.asyncBoard) {
+      _renderAsync(canvas, v);
+    } else {
+      _renderLegacy(canvas, v);
     }
-    if (img != null) {
-      final ratio = _builtRatio;
-      canvas.drawImageRect(
-        img,
-        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-        Rect.fromLTWH(0, 0, img.width / ratio, img.height / ratio),
-        Paint()..filterQuality = FilterQuality.medium,
-      );
-    } else if (_picture != null) {
-      canvas.drawPicture(_picture!);
-    }
-    canvas.restore();
+    _view = v;
     canvas.save();
     canvas.transform(v.matrix);
-    painter.paintMedallion(canvas, _time);
+    final med = painter.geometry.medallion > 0 ? painter.geometry.medallion : painter.geometry.radius * 0.22;
+    if (_pointVisible(v, 0.5, 0.5, med)) painter.paintMedallion(canvas, _time);
     painter.paintHighlights(
       canvas,
       time: _time,
@@ -943,6 +1267,7 @@ class BoardComponent extends PositionComponent {
       lastFrom: host.lastFrom,
       lastTo: host.lastTo,
       checked: host.checkedKings,
+      visible: PerfConfig.culling ? _visibleFn : null,
     );
     for (final t in _trails) {
       final a = host.geometry.byId(t.from), b = host.geometry.byId(t.to);
@@ -962,8 +1287,26 @@ class BoardComponent extends PositionComponent {
     _picture?.dispose();
     _image = null;
     _picture = null;
+    _contentGen++;
+    _cancelTiles();
+    _basePic?.dispose();
+    _basePic = null;
+    _baseImg?.dispose();
+    _baseImg = null;
+    _disposeTiles(_tiles);
+    _disposeTiles(_oldTiles);
+    _tiles = const [];
+    _oldTiles = const [];
     super.onRemove();
   }
+}
+
+/// Tuile haute résolution du plateau : image et rectangle (coordonnées de la vue construite).
+class _BoardTile {
+  _BoardTile(this.image, this.dst) : src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+  final ui.Image image;
+  final Rect dst;
+  final Rect src;
 }
 
 /// Ce dont le plateau a besoin du jeu.
@@ -984,4 +1327,7 @@ abstract class BoardHost {
 
   /// Faux pendant un zoom/panoramique : le plateau pré-rendu est alors simplement transformé.
   bool get cameraSettled;
+
+  /// Vue entière (zoom ×1) : repère de la couche statique enregistrée une fois.
+  BoardView? get baseView;
 }

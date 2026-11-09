@@ -31,7 +31,7 @@ double impactTime(PieceType t) => switch (t) {
     };
 
 /// Rendu d'une attaque spéciale (≈ 900 ms) entre deux points écran.
-class AttackEffect extends Component {
+class AttackEffect extends Component with ViewCulled {
   AttackEffect({
     required this.type,
     required this.from,
@@ -68,6 +68,15 @@ class AttackEffect extends Component {
   }
 
   double _k(double a, double b) => ((t - a) / (b - a)).clamp(0.0, 1.0);
+
+  @override
+  bool visibleIn(ui.Rect r) {
+    final m = unit * 6;
+    return math.max(from.x, to.x) + m >= r.left &&
+        math.min(from.x, to.x) - m <= r.right &&
+        math.max(from.y, to.y) + m >= r.top &&
+        math.min(from.y, to.y) - m <= r.bottom;
+  }
 
   void _emit(double dt) {
     final r = unit;

@@ -7,11 +7,13 @@ import 'package:flutter/animation.dart' show Curves;
 
 import '../models/protocol.dart';
 import 'fx.dart';
+import 'perf.dart';
 import 'piece_component.dart';
 import 'rig/anim.dart';
 import 'rig/skeleton.dart';
 import 'rig/warrior_rig.dart';
 import 'warrior_art.dart';
+import 'warrior_atlas.dart';
 
 export 'rig/anim.dart' show AnimState;
 
@@ -67,6 +69,26 @@ class WarriorPiece extends PieceComponent {
   // Statue (pièce pétrifiée immobile) enregistrée une fois en Picture.
   ui.Picture? _statue;
   int _statueKey = 0;
+
+  // Hôte (jeu) : culling, caméra en mouvement, atlas. Résolu une fois monté.
+  bool _hostLooked = false;
+  CullHost? _cullHost;
+  WarriorBatchHost? _batchHost;
+
+  /// Temps de rig non encore appliqué (pièce hors champ ou dessinée depuis l'atlas : mise à
+  /// jour du squelette à basse fréquence, ressorts gelés hors champ).
+  double _rigDebt = 0;
+  int _tick = 0;
+  double _sinceTrail = 9;
+
+  /// Couche en lot : chevauche par devant un guerrier tourné à gauche (ordre de dessin).
+  bool batchConflict = false;
+
+  /// Mises à jour complètes du rig (tests du culling).
+  int rigUpdates = 0;
+
+  /// Pan/zoom en cours (allègement : traînées coupées, ressorts gelés, moins de flammes).
+  bool get _lite => PerfConfig.gestureLite && (_cullHost?.cameraMoving ?? false);
 
   AnimState get animState => rig.state;
   double get flash => _flash;
@@ -161,10 +183,28 @@ class WarriorPiece extends PieceComponent {
 
   // ------------------------------------------------------------- mise à jour
 
+  /// Au repos (ni déplacement, ni sélection, ni effet) : peut être dessiné depuis l'atlas.
+  bool get cacheable {
+    if (isMoving || selected || inCheck || _ko || alpha < 1 || _flash > 0 || _lift > 0.01) return false;
+    if (_sinceTrail < 0.35) return false;
+    if (frozen) return rig.state == AnimState.petrified && rig.stateTime > 0.9 && _aura < 0.03;
+    return rig.state == AnimState.idle && !rig.sm.blending && rig.sm.speed == 1 && (_aura - 1).abs() < 0.05;
+  }
+
+  void _lookupHost() {
+    if (_hostLooked) return;
+    final g = findGame();
+    if (g == null) return;
+    _hostLooked = true;
+    if (g is CullHost) _cullHost = g as CullHost;
+    if (g is WarriorBatchHost) _batchHost = g as WarriorBatchHost;
+  }
+
   @override
   void update(double dt) {
     super.update(dt);
     _time += dt;
+    _lookupHost();
     if (type != rig.type) rig = WarriorRig(type, phase: _phase); // promotion
     if (!_facingSet) {
       final g = findGame();
@@ -195,7 +235,24 @@ class WarriorPiece extends PieceComponent {
     }
     _lastPos.setFrom(position);
     _hasLastPos = true;
-    if (!(frozen && _statue != null)) rig.update(dt, shiftX: sx, shiftY: sy);
+    final atlas = PerfConfig.spriteCache ? _batchHost?.warriorAtlas : null;
+    batched = atlas != null && cacheable;
+    final lite = _lite;
+    if ((culled && !isMoving) || batched) {
+      // Hors champ ou en sprite : squelette mis à jour à basse fréquence ; ressorts gelés
+      // hors champ ou pendant un geste.
+      _rigDebt += dt;
+      _tick++;
+      if (_tick % (culled ? 16 : 8) == 0) {
+        rigUpdates++;
+        rig.update(_rigDebt, springs: !culled && !lite);
+        _rigDebt = 0;
+      }
+    } else if (!(frozen && _statue != null)) {
+      rigUpdates++;
+      rig.update(dt + _rigDebt, shiftX: sx, shiftY: sy, springs: !lite || isMoving);
+      _rigDebt = 0;
+    }
 
     final attacking = rig.state == AnimState.attack;
     final targetAura = frozen || _ko
@@ -217,7 +274,9 @@ class WarriorPiece extends PieceComponent {
     for (var i = 0; i < _trailN; i++) {
       _trailAge[i] += dt;
     }
+    _sinceTrail += dt;
     if (isMoving) {
+      _sinceTrail = 0;
       _trailHead = (_trailHead + 1) % _trailN;
       _trail[_trailHead * 2] = position.x;
       _trail[_trailHead * 2 + 1] = position.y - radius * 0.6;
@@ -285,10 +344,11 @@ class WarriorPiece extends PieceComponent {
     final hop = isMoving && _flying ? math.sin(math.pi * moveProgress) * _arc : 0.0;
     final lift = _lift * r * 0.5 + hop;
     final lod = lodFor(r);
+    final lite = _lite;
     // Hauteur du bassin au-dessus de sa position de repos (sauts du clip) -> ombre.
     final airborne = math.max(0.0, -rig.skeleton.world[5]) * s + lift;
 
-    _renderTrail(canvas, size, auraPal);
+    if (!lite) _renderTrail(canvas, size, auraPal);
 
     // Socle + ombre douce (image floutée partagée, mise à l'échelle).
     final shrink = 1 / (1 + airborne / (r * 3));
@@ -309,7 +369,10 @@ class WarriorPiece extends PieceComponent {
       ..color = frozen ? const ui.Color(0xFF8C8F99) : pal.light;
     canvas.drawOval(ui.Rect.fromCenter(center: ui.Offset(cx, feetY), width: r * 1.9, height: r * 0.68), _line);
 
-    if (_aura > 0.03) _renderAura(canvas, cx, feetY - lift, r, auraPal);
+    if (_aura > 0.03) {
+      _addAura(_sprites, cx, feetY - lift, r, auraPal, lite ? 4 : 10);
+      _sprites.flush(canvas);
+    }
 
     var dx = 0.0, dy = 0.0;
     if (inCheck && !frozen) {
@@ -341,6 +404,8 @@ class WarriorPiece extends PieceComponent {
     canvas.restore();
   }
 
+  static const _hands = [B.armFrontL, B.armBackL];
+
   /// Lueurs accrochées aux os (orbe du bâton, charge d'énergie dans les mains).
   void _renderHeldFx(ui.Canvas canvas, WarriorPalette pal) {
     final pulse = 0.85 + 0.15 * math.sin(_time * 5 + _phase);
@@ -354,7 +419,7 @@ class WarriorPiece extends PieceComponent {
     if (atk >= 0 && atk < 0.55 && (type == PieceType.queen || type == PieceType.king || type == PieceType.pawn)) {
       final k = math.sin(math.pi * atk / 0.55);
       final col = type == PieceType.king ? const ui.Color(0xFFFFD34D) : pal.aura;
-      for (final b in [B.armFrontL, B.armBackL]) {
+      for (final b in _hands) {
         final o = rig.bonepoint(b, 0, 0.45);
         _sprites.addColor(Fx.glow, o.dx, o.dy, 1.1 * k, col);
         _sprites.addColor(Fx.spark, o.dx, o.dy, 0.9 * k, const ui.Color(0xFFFFFFFF), rot: _time * 6);
@@ -378,16 +443,65 @@ class WarriorPiece extends PieceComponent {
     _sprites.flush(canvas);
   }
 
-  void _renderAura(ui.Canvas canvas, double cx, double feetY, double r, WarriorPalette pal) {
+  // ------------------------------------------------------------- rendu en lot (atlas)
+
+  /// Auras des guerriers au repos (lot additif commun, coordonnées du monde).
+  void addBatchedAura(SpriteBatch batch) {
+    if (frozen || _aura <= 0.03) return;
+    _addAura(batch, position.x, position.y + radius * 0.6, radius, WarriorPalette.of(owner), _lite ? 4 : 10);
+  }
+
+  int _frameIndex(WarriorAtlasData atlas) {
+    final sm = rig.sm;
+    final p = sm.clip.duration;
+    if (p <= 0) return 0;
+    final t = (sm.time + _rigDebt * sm.speed) % p;
+    return (t / p * atlas.frames).round() % atlas.frames;
+  }
+
+  void _put(WarriorAtlasData atlas, SpriteBatch batch, int cell, double sign, int argb) {
+    final s = radius * 0.72;
+    final k = s / atlas.ppu;
+    final c = atlas.cells;
+    final o = cell * 6;
+    batch.addRegion(c[o], c[o + 1], c[o + 2], c[o + 3], k, position.x * sign - c[o + 4] * k,
+        position.y + radius * 0.6 - c[o + 5] * k, argb);
+  }
+
+  /// Ombre pré-floutée et socle depuis l'atlas.
+  void addBatchedGround(WarriorAtlasData atlas, SpriteBatch batch) {
+    _put(atlas, batch, atlas.shadow, 1, 0x96FFFFFF);
+    _put(atlas, batch, atlas.socle(frozen ? 3 : owner), 1, 0xFFFFFFFF);
+  }
+
+  /// Corps depuis l'atlas. [sign] -1 : série dessinée en miroir (x négés).
+  void addBatchedBody(WarriorAtlasData atlas, SpriteBatch batch, double sign) {
+    _put(atlas, batch, frozen ? atlas.petrified(type) : atlas.idle(type, owner, _frameIndex(atlas)), sign,
+        0xFFFFFFFF);
+  }
+
+  /// Lueurs tenues (orbe du bâton du fou), positions pré-calculées avec l'atlas.
+  void addBatchedHeld(WarriorAtlasData atlas, SpriteBatch batch) {
+    if (frozen || type != PieceType.bishop) return;
+    final f = _frameIndex(atlas);
+    final s = radius * 0.72;
+    final x = position.x + atlas.orb[f * 2] * s * facing;
+    final y = position.y + radius * 0.6 + atlas.orb[f * 2 + 1] * s;
+    final pal = WarriorPalette.of(owner);
+    final pulse = 0.85 + 0.15 * math.sin(_time * 5 + _phase);
+    batch.addColor(Fx.glow, x, y, 1.3 * pulse * s, pal.aura, alpha: 0.9);
+    batch.addColor(Fx.flare, x, y, 0.9 * s, const ui.Color(0xFFFFFFFF), rot: _time * 1.5, alpha: 0.6);
+  }
+
+  void _addAura(SpriteBatch batch, double cx, double feetY, double r, WarriorPalette pal, int n) {
     final lvl = _aura;
     final blink = inCheck ? (math.sin(_time * 14) > 0 ? 1.0 : 0.3) : 1.0;
     final pulse = 0.85 + 0.15 * math.sin(_time * 3.2 + _phase);
     final h = rig.def.height * r * 0.72;
     // Halo.
-    _sprites.addColor(Fx.glow, cx, feetY - h * 0.45, h * 1.5 * math.sqrt(lvl) * pulse, pal.aura,
+    batch.addColor(Fx.glow, cx, feetY - h * 0.45, h * 1.5 * math.sqrt(lvl) * pulse, pal.aura,
         alpha: (0.32 * lvl * blink).clamp(0.0, 0.8));
     // Flammes montantes (sprites « flame » teintés, mélange additif).
-    const n = 10;
     for (var i = 0; i < n; i++) {
       final ph = (_time * (0.55 + 0.1 * (i % 3)) + i / n + _phase) % 1.0;
       final side = math.sin(i * 2.399 + _phase);
@@ -395,10 +509,9 @@ class WarriorPiece extends PieceComponent {
       final y = feetY - ph * h * (0.9 + 0.12 * lvl);
       final sz = r * (0.9 + 0.35 * lvl) * (1 - ph * 0.7);
       final a = (1 - ph) * math.min(1.0, lvl * 0.7) * blink;
-      _sprites.addColor(Fx.flame, x, y, sz, pal.aura, rot: side * 0.25, alpha: a);
-      if (i % 3 == 0) _sprites.addColor(Fx.glow, x, y, sz * 0.45, const ui.Color(0xFFFFFFFF), alpha: a * 0.5);
+      batch.addColor(Fx.flame, x, y, sz, pal.aura, rot: side * 0.25, alpha: a);
+      if (i % 3 == 0) batch.addColor(Fx.glow, x, y, sz * 0.45, const ui.Color(0xFFFFFFFF), alpha: a * 0.5);
     }
-    _sprites.flush(canvas);
   }
 }
 

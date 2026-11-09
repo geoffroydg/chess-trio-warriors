@@ -87,6 +87,9 @@ class WarriorRig {
   /// Physique des chaînes (désactivée pour une statue).
   bool physics = true;
 
+  /// Clignement procédural des yeux (coupé pour pré-rendre les images de l'atlas).
+  bool blink = true;
+
   AnimState get state => sm.state;
   double get stateTime => sm.time / (sm.speed == 0 ? 1 : sm.speed);
 
@@ -95,11 +98,12 @@ class WarriorRig {
 
   /// Avance l'animation. [shiftX]/[shiftY] : déplacement de la pièce (unités d'art, repère
   /// du personnage) depuis l'image précédente, pour l'inertie des chaînes.
-  void update(double dt, {double shiftX = 0, double shiftY = 0}) {
+  /// [springs] faux : les chaînes restent gelées (pan/zoom en cours, pièce hors champ).
+  void update(double dt, {double shiftX = 0, double shiftY = 0, bool springs = true}) {
     _time += dt;
     sm.update(dt);
     // Clignement des yeux (procédural, par-dessus le clip).
-    if (sm.state != AnimState.ko && sm.state != AnimState.petrified) {
+    if (blink && sm.state != AnimState.ko && sm.state != AnimState.petrified) {
       final k = _time - _blinkAt;
       if (k > 0) {
         final b = k < 0.06 ? 1 - k / 0.06 : (k < 0.13 ? (k - 0.06) / 0.07 : 1.0);
@@ -108,7 +112,7 @@ class WarriorRig {
       }
     }
     skeleton.solve(sm.out);
-    if (physics) {
+    if (physics && springs) {
       for (final c in chains) {
         if (shiftX != 0 || shiftY != 0) c.shift(-shiftX, -shiftY);
         c.update(skeleton, dt, _time);
