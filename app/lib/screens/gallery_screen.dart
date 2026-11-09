@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../game/attacks.dart';
 import '../game/gallery_game.dart';
+import '../game/warrior_piece.dart' show AnimState;
 import '../theme.dart';
 
 /// Galerie de démonstration : 6 guerriers x 3 couleurs et un bouton par attaque spéciale.
@@ -12,6 +13,18 @@ class GalleryScreen extends StatefulWidget {
   @override
   State<GalleryScreen> createState() => _GalleryScreenState();
 }
+
+/// Libellés français des états d'animation.
+String animStateLabel(AnimState s) => switch (s) {
+      AnimState.idle => 'Repos',
+      AnimState.move => 'Marche',
+      AnimState.jump => 'Saut',
+      AnimState.attack => 'Attaque',
+      AnimState.hit => 'Touché',
+      AnimState.ko => 'K.-O.',
+      AnimState.victory => 'Victoire',
+      AnimState.petrified => 'Pétrifié',
+    };
 
 class _GalleryScreenState extends State<GalleryScreen> {
   final GalleryGame _game = GalleryGame();
@@ -41,6 +54,8 @@ class _GalleryScreenState extends State<GalleryScreen> {
               runSpacing: 6,
               alignment: WrapAlignment.center,
               children: [
+                for (final st in AnimState.values)
+                  _btn(animStateLabel(st), () => _game.playState(st), color: const Color(0xFF1F4A7A)),
                 for (final t in galleryOrder)
                   _btn('${pieceNameFr(t)} : ${attackName(t)}', () => _game.playAttack(t),
                       color: const Color(0xFF7A3B1A)),

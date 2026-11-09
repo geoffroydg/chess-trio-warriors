@@ -79,6 +79,28 @@ void main() {
     expect(game.pool.aliveCount, lessThan(game.pool.capacity));
   });
 
+  testWidgets('galerie : chaque état d\'animation sur les 18 guerriers', (tester) async {
+    final game = GalleryGame();
+    await tester.pumpWidget(MaterialApp(home: SizedBox(width: 450, height: 800, child: GameWidget(game: game))));
+    await tester.pump();
+    await tester.pump();
+    for (final s in AnimState.values) {
+      game.playState(s);
+      await _advance(tester, 100);
+      for (final p in game.grid) {
+        expect(p.rig.isFinite, isTrue);
+        if (s != AnimState.hit) expect(p.animState, s, reason: s.name);
+      }
+      await _advance(tester, 2600);
+      for (final p in game.grid) {
+        expect(p.isMounted, isTrue); // la galerie ne retire pas les guerriers K.-O.
+      }
+    }
+    game.playState(AnimState.idle);
+    await _advance(tester, 300);
+    expect(game.grid.every((p) => p.animState == AnimState.idle && p.alpha == 1), isTrue);
+  });
+
   testWidgets('saut d\'une attaque par finish()', (tester) async {
     final game = GalleryGame();
     await tester.pumpWidget(MaterialApp(home: SizedBox(width: 400, height: 700, child: GameWidget(game: game))));
@@ -97,7 +119,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.textContaining('Séisme'), findsOneWidget);
-    for (final label in ['Rayon', 'Rafale', 'Coup de pied', 'Séisme', 'Combo', 'Vague', 'Sélection', 'Gel', 'ÉCHEC', 'MAT']) {
+    for (final label in ['Repos', 'Marche', 'Saut', 'Attaque', 'Touché', 'K.-O.', 'Victoire', 'Pétrifié', 'Rayon', 'Rafale', 'Coup de pied', 'Séisme', 'Combo', 'Vague', 'Sélection', 'Gel', 'ÉCHEC', 'MAT']) {
       final f = find.textContaining(label);
       await tester.ensureVisible(f.first);
       await tester.tap(f.first);

@@ -17,6 +17,10 @@ class Storage {
   String get pseudo => _prefs.getString('pseudo') ?? '';
   Future<void> setPseudo(String v) => _prefs.setString('pseudo', v);
 
+  /// Overlay FPS de débogage (Réglages).
+  bool get debugFps => _prefs.getBool('debug.fps') ?? false;
+  Future<void> setDebugFps(bool v) => _prefs.setBool('debug.fps', v);
+
   String? get serverUrl => _prefs.getString('serverUrl');
   Future<void> setServerUrl(String? v) =>
       v == null ? _prefs.remove('serverUrl') : _prefs.setString('serverUrl', v);

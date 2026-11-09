@@ -46,6 +46,10 @@ abstract class PieceComponent extends PositionComponent {
 
   bool get isMoving => _to != null;
 
+  /// Destination du déplacement en cours (null à l'arrêt).
+  @protected
+  Vector2? get moveTarget => _to;
+
   /// Progression du déplacement (0..1).
   double get moveProgress => _t;
 
@@ -91,6 +95,18 @@ abstract class PieceComponent extends PositionComponent {
 
   /// Impact subi (flash blanc).
   void hit() {}
+
+  /// Mise hors de combat. [dissolve] : la pièce se dissout puis se retire du jeu ;
+  /// sinon elle reste à terre (fin de partie). Par défaut : retrait immédiat.
+  void knockOut({bool dissolve = true}) {
+    if (dissolve) removeFromParent();
+  }
+
+  /// Animation de victoire (fin de partie).
+  void celebrate() {}
+
+  /// Oriente la pièce vers un point (attaquant, cible).
+  void faceTowards(Vector2 p) {}
 
   /// Dessin de la pièce dans un carré [size] centré sur la case.
   void renderPiece(ui.Canvas canvas, Vector2 size);

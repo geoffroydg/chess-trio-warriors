@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../config.dart';
+import '../game/fx.dart' show DebugFlags;
 import '../services/api.dart';
 import '../services/sound_service.dart';
 import '../state/app_state.dart';
@@ -115,6 +116,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   const SizedBox(height: 8),
                   _audio(sound),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.speed),
+                    title: const Text('Afficher les FPS (débogage)'),
+                    value: DebugFlags.showFps.value,
+                    onChanged: (v) {
+                      setState(() => DebugFlags.showFps.value = v);
+                      context.read<AppState>().storage.setDebugFps(v);
+                    },
+                  ),
                   const SizedBox(height: 8),
                   BigButton(label: 'Tester la connexion', secondary: true, onPressed: _test),
                   const SizedBox(height: 14),

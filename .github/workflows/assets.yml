@@ -1,0 +1,66 @@
+name: Assets (textures CC0)
+
+on:
+  push:
+    branches: [main, ccr-b4a21867-um8mut]
+    paths:
+      - 'scripts/assets/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: assets-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Dépendances Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install pillow numpy
+
+      # Télécharge le « Particle Pack » de Kenney (CC0) ; si toutes les sources
+      # échouent, le script génère des textures équivalentes (aucun échec du job).
+      - name: Textures de particules (Kenney CC0 ou repli procédural)
+        run: |
+          python -I scripts/assets/fetch_assets.py
+          cat app/assets/fx/CREDITS
+          du -ch app/assets/fx/*.png | tail -1
+
+      - name: Commit des textures
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A app/assets/fx
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "Textures d'effets CC0 (scripts/assets)"
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            sleep 5
+          done
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # Un push fait avec GITHUB_TOKEN ne déclenche pas d'autre workflow :
+      # on relance explicitement la construction de l'APK (assets.yml ne réagit
+      # pas à app/assets/fx, donc aucune boucle).
+      - name: Reconstruire l'APK
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run app.yml --ref "${GITHUB_REF_NAME}"

@@ -219,7 +219,9 @@ class ChessGame extends FlameGame with FxHost {
   void megaExplosion(Vector2 at, double r, Color color) {
     pool.burst(at.x, at.y, 90, r * 22, r * 0.4, color, lifeS: 1.2);
     pool.burst(at.x, at.y, 60, r * 16, r * 0.3, const Color(0xFFFFFFFF), lifeS: 0.8);
-    pool.burst(at.x, at.y, 30, r * 12, r * 0.25, const Color(0xFFFFD34D), lifeS: 1.4, g: 300);
+    pool.burst(at.x, at.y, 30, r * 12, r * 0.25, const Color(0xFFFFD34D), lifeS: 1.4, g: 300, fx: Fx.star);
+    pool.burst(at.x, at.y, 24, r * 18, r * 0.3, const Color(0xFFFFFFFF), lifeS: 0.6, fx: Fx.spark);
+    pool.burst(at.x, at.y, 16, r * 6, r * 0.7, const Color(0x88302838), lifeS: 1.6, glow: false, fx: Fx.smokeB);
     for (var i = 0; i < 3; i++) {
       add(ShockRing(
           center: at + Vector2(0, r * 0.8),
@@ -316,6 +318,30 @@ class ChessGame extends FlameGame with FxHost {
       piece.inCheck = !piece.frozen && checkedKings.contains(id);
       piece.setSelected(false);
     }
+    if (msg.over && !_overShown) {
+      _overShown = true;
+      _celebrate(msg);
+    }
+  }
+
+  bool _overShown = false;
+
+  /// Fin de partie : les guerriers du vainqueur célèbrent, les rois vaincus tombent K.-O.
+  void _celebrate(GameMsg msg) {
+    final winner = msg.result?.winner ?? msg.state.result?.winner;
+    if (winner == null) return;
+    add(TimerComponent(
+        period: msg.lastEvent?.captured != null ? 1.2 : 0.5,
+        removeOnFinish: true,
+        onTick: () {
+          for (final p in _pieces.values) {
+            if (p.owner == winner) {
+              p.celebrate();
+            } else if (p.type == PieceType.king && !p.frozen) {
+              p.knockOut(dissolve: false);
+            }
+          }
+        }));
   }
 
   /// Termine immédiatement les attaques en cours (nouveau coup reçu ou tap pour passer).

@@ -50,7 +50,7 @@ class GalleryGame extends FlameGame with FxHost {
     await add(ArenaBackdrop());
     for (var o = 0; o < 3; o++) {
       for (final t in galleryOrder) {
-        final p = WarriorPiece(type: t, owner: o, cellId: '0a1');
+        final p = WarriorPiece(type: t, owner: o, cellId: '0a1')..removeAfterKo = false;
         grid.add(p);
         await add(p);
       }
@@ -127,6 +127,36 @@ class GalleryGame extends FlameGame with FxHost {
     add(seq);
   }
 
+  /// État d'animation joué par les 18 guerriers de la grille.
+  AnimState? gridState;
+
+  /// Joue un état (IDLE, MOVE, JUMP, ATTACK, HIT, KO, VICTORY, PETRIFIED) sur toute la grille.
+  void playState(AnimState s) {
+    gridState = s;
+    frozenAll = s == AnimState.petrified;
+    for (final p in grid) {
+      p.playState(s);
+    }
+    // Retour au repos pour les états qui ne se terminent pas d'eux-mêmes.
+    final back = switch (s) {
+      AnimState.move => 1.6,
+      AnimState.ko => 2.4,
+      _ => 0.0,
+    };
+    if (back > 0) {
+      add(TimerComponent(
+          period: back,
+          removeOnFinish: true,
+          onTick: () {
+            if (gridState != s) return;
+            gridState = AnimState.idle;
+            for (final p in grid) {
+              p.playState(AnimState.idle);
+            }
+          }));
+    }
+  }
+
   void showCheck() {
     final k = grid.firstWhere((p) => p.type == PieceType.king && p.owner == 0);
     k.inCheck = true;
@@ -139,7 +169,9 @@ class GalleryGame extends FlameGame with FxHost {
     showBanner('MAT !', const ui.Color(0xFFFF3B5C), seconds: 2.0, sizeFactor: 0.22);
     final at = chestOf(k);
     pool.burst(at.x, at.y, 90, k.radius * 22, k.radius * 0.4, const ui.Color(0xFFFF5A7A), lifeS: 1.2);
-    pool.burst(at.x, at.y, 60, k.radius * 16, k.radius * 0.3, const ui.Color(0xFFFFFFFF), lifeS: 0.8);
+    pool.burst(at.x, at.y, 60, k.radius * 16, k.radius * 0.3, const ui.Color(0xFFFFFFFF), lifeS: 0.8, fx: Fx.spark);
+    pool.burst(at.x, at.y, 20, k.radius * 10, k.radius * 0.3, const ui.Color(0xFFFFD34D), lifeS: 1.2, fx: Fx.star);
+    pool.burst(at.x, at.y, 14, k.radius * 6, k.radius * 0.7, const ui.Color(0x88302838), lifeS: 1.6, glow: false, fx: Fx.smokeB);
     for (var i = 0; i < 3; i++) {
       add(ShockRing(
           center: at + Vector2(0, k.radius * 0.8),

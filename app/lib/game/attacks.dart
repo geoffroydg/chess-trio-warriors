@@ -140,16 +140,10 @@ class AttackEffect extends Component {
   }
 
   void _glowCircle(ui.Canvas c, ui.Offset o, double rad, ui.Color col) {
-    _f
-      ..blendMode = ui.BlendMode.plus
-      ..color = col.withAlpha(110);
-    c.drawCircle(o, rad * 1.7, _f);
-    _f.color = col.withAlpha(220);
-    c.drawCircle(o, rad, _f);
-    _f
-      ..color = _white
-      ..blendMode = ui.BlendMode.srcOver;
-    c.drawCircle(o, rad * 0.5, _f);
+    if (rad <= 0.2) return;
+    drawFxSprite(c, Fx.glow, o, rad * 4.2, col, alpha: 0.85);
+    drawFxSprite(c, Fx.flare, o, rad * 3.0, _white, rot: t * 4, alpha: 0.55);
+    drawFxSprite(c, Fx.glow, o, rad * 1.4, _white);
   }
 
   void _queen(ui.Canvas canvas, double r) {
@@ -397,6 +391,7 @@ class CaptureSequence extends Component {
   double _t = 0;
   bool _impacted = false;
   bool _moved = false;
+  bool _knocked = false;
   bool _done = false;
   AttackEffect? _effect;
 
@@ -410,6 +405,8 @@ class CaptureSequence extends Component {
   void onMount() {
     super.onMount();
     final dir = victim.position - attacker.position;
+    attacker.faceTowards(victim.position);
+    victim.faceTowards(attacker.position);
     attacker.startAttack(dir);
     final pal = WarriorPalette.of(attacker.owner);
     _effect = AttackEffect(
@@ -431,9 +428,11 @@ class CaptureSequence extends Component {
     final r = victim.radius;
     final vp = _victimPos;
     final vpal = WarriorPalette.of(victim.owner);
-    pool.burst(vp.x, vp.y, 28, r * 14, r * 0.28, vpal.aura, lifeS: 0.8);
-    pool.burst(vp.x, vp.y, 18, r * 10, r * 0.2, const ui.Color(0xFFFFFFFF), lifeS: 0.5);
-    pool.burst(vp.x, vp.y, 10, r * 9, r * 0.16, vpal.dark, lifeS: 0.9, g: 500, glow: false);
+    pool.burst(vp.x, vp.y, 22, r * 14, r * 0.28, vpal.aura, lifeS: 0.8);
+    pool.burst(vp.x, vp.y, 14, r * 12, r * 0.22, const ui.Color(0xFFFFFFFF), lifeS: 0.5, fx: Fx.spark);
+    pool.burst(vp.x, vp.y, 6, r * 6, r * 0.3, const ui.Color(0xFFFFF3C4), lifeS: 0.45, fx: Fx.star);
+    pool.burst(vp.x, vp.y, 8, r * 5, r * 0.4, const ui.Color(0x99302838), lifeS: 0.9, glow: false, fx: Fx.smokeA);
+    pool.burst(vp.x, vp.y, 10, r * 9, r * 0.16, vpal.dark, lifeS: 0.9, g: 500, glow: false, fx: Fx.smokeB);
     victim.parent?.add(ShockRing(
         center: victim.position + Vector2(0, r * 0.6), maxRadius: r * 2.8, color: vpal.aura));
     host.hitstop(0.08);
@@ -454,14 +453,29 @@ class CaptureSequence extends Component {
     if (_done) return;
     _t += dt;
     if (!_impacted && _t >= impactTime(attacker.type)) _impact();
-    if (_impacted && _t >= impactTime(attacker.type) + 0.2 && victim.isMounted) {
-      victim.removeFromParent();
+    if (_impacted && !_knocked && _t >= impactTime(attacker.type) + 0.22) {
+      _knocked = true;
+      victim.knockOut(); // KO puis dissolution ; la victime se retire d'elle-même
     }
     if (!_moved && _t >= 0.72) _startMove();
-    if (_t >= total) finish();
+    if (_t >= total) _end();
   }
 
-  /// Termine immédiatement la séquence (fin normale ou saut par l'utilisateur).
+  /// Fin normale : la victime termine sa chute et sa dissolution.
+  void _end() {
+    if (_done) return;
+    _done = true;
+    _impact();
+    if (!_knocked) {
+      _knocked = true;
+      victim.knockOut();
+    }
+    _startMove();
+    removeFromParent();
+    onFinished?.call();
+  }
+
+  /// Termine immédiatement la séquence (saut par l'utilisateur ou nouveau coup).
   void finish() {
     if (_done) return;
     _done = true;

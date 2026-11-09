@@ -1,0 +1,11 @@
+Textures d'effets de Chess Trio Warriors (toutes CC0)
+Source : génération procédurale (scripts/assets/fetch_assets.py)
+
+glow.png : généré (procédural, numpy)
+smoke_a.png : généré (procédural, numpy)
+smoke_b.png : généré (procédural, numpy)
+spark.png : généré (procédural, numpy)
+star.png : généré (procédural, numpy)
+trace.png : généré (procédural, numpy)
+flare.png : généré (procédural, numpy)
+flame.png : généré (procédural, numpy)

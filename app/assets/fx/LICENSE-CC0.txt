@@ -1,0 +1,7 @@
+Creative Commons Zero v1.0 Universal (CC0 1.0) - Domaine public
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Les textures de ce dossier sont soit issues du « Particle Pack » de Kenney
+(www.kenney.nl, licence CC0), soit générées procéduralement par
+scripts/assets/fetch_assets.py et versées dans le domaine public (CC0) par
+les auteurs de Chess Trio Warriors. Aucune attribution n'est requise.

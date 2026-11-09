@@ -69,6 +69,7 @@ flutter:
 
   assets:
     - assets/geometry.json
+    - assets/fx/
     - assets/audio/music/
     - assets/audio/sfx/
     - assets/audio/voice/
