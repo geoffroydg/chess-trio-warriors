@@ -39,7 +39,19 @@ export class Room extends DurableObject<Env> {
           }
         }
       },
-      notify: (msgs) => ctx.waitUntil(this.fcm.send(msgs)),
+      notify: (msgs) =>
+        ctx.waitUntil(
+          this.fcm.send(msgs).then((bad) => (bad.length ? this.logic.dropFcmTokens(bad) : undefined)),
+        ),
+      disconnect: (id) => {
+        for (const ws of ctx.getWebSockets(`p${id}`)) {
+          try {
+            ws.close(1000, 'left');
+          } catch {
+            /* déjà fermé */
+          }
+        }
+      },
       botCpuMs: parseBotCpuMs(env.BOT_CPU_MS),
     });
   }

@@ -49,7 +49,7 @@ export interface PushMessage {
   fcmToken: string;
   title: string;
   body: string;
-  data: { roomCode: string; type: 'turn' | 'move' | 'resign' | 'gameOver' };
+  data: { roomCode: string; type: 'turn' | 'move' | 'resign' | 'eliminated' | 'gameOver' };
 }
 
 export interface RoomDeps {
@@ -63,6 +63,8 @@ export interface RoomDeps {
   isConnected: (playerId: Player) => boolean;
   send: (playerId: Player, message: ServerMessage) => void;
   notify: (messages: PushMessage[]) => void;
+  /** Ferme les sockets d'un joueur qui a quitté le salon. */
+  disconnect?: (playerId: Player) => void;
   /** Budget CPU d'un coup de bot (ms), variable d'env BOT_CPU_MS ; défaut DEFAULT_BOT_CPU_MS (8). */
   botCpuMs?: number;
 }
@@ -242,6 +244,7 @@ export class RoomLogic {
       return err('badMessage', 'JSON invalide.');
     }
     if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return err('badMessage', 'Message invalide.');
+    if (!d.players.some((p) => p.id === playerId && !p.isBot)) return; // a quitté le salon
     switch (msg.type) {
       case 'ping':
         this.deps.send(playerId, { type: 'pong', now: this.deps.now() });
@@ -250,8 +253,37 @@ export class RoomLogic {
         if (typeof msg.fcmToken !== 'string' || msg.fcmToken.length < 1 || msg.fcmToken.length > 4096) return err('badMessage', 'fcmToken invalide.');
         const me = d.players.find((p) => p.id === playerId);
         if (!me) return;
+        // Un même jeton FCM ne sert qu'un seul siège du salon.
+        for (const p of d.players) if (p !== me && p.fcmToken === msg.fcmToken) delete p.fcmToken;
         me.fcmToken = msg.fcmToken;
         await this.persist();
+        this.broadcastRoom();
+        return;
+      }
+      case 'unregisterPush': {
+        const me = d.players.find((p) => p.id === playerId);
+        if (me) delete me.fcmToken;
+        await this.persist();
+        this.broadcastRoom();
+        return;
+      }
+      case 'leave': {
+        if (d.started && d.state && !d.state.result && d.state.active[playerId]) {
+          await this.doResign(d, playerId);
+        }
+        const me = d.players.find((p) => p.id === playerId)!;
+        delete me.fcmToken;
+        if (!d.started) {
+          d.players = d.players.filter((p) => p !== me);
+          d.lastActivity = this.deps.now();
+          if (!d.players.some((p) => !p.isBot)) {
+            this.data = null;
+            await this.deps.deleteAll();
+            return;
+          }
+        }
+        await this.persist();
+        this.deps.disconnect?.(playerId);
         this.broadcastRoom();
         return;
       }
@@ -310,16 +342,7 @@ export class RoomLogic {
         if (!d.started || !d.state) return err('notStarted', "La partie n'a pas commencé.");
         if (d.state.result) return err('gameOver', 'La partie est terminée.');
         if (!d.state.active[playerId]) return err('notActive', "Tu n'es plus en jeu.");
-        const prevTurn = d.state.turn;
-        d.state = resign(d.state, playerId);
-        d.lastEvent = d.state.lastEvent;
-        d.lastActivity = this.deps.now();
-        if (d.state.result) this.finish(d);
-        else if (d.state.turn !== prevTurn) d.turnDeadline = this.deps.now() + TURN_MS;
-        this.scheduleBot(d);
-        await this.persist();
-        this.broadcastGame();
-        this.pushAfter(d.lastEvent!, false);
+        await this.doResign(d, playerId);
         return;
       }
       default:
@@ -357,17 +380,49 @@ export class RoomLogic {
 
   // ---------- Interne ----------
 
+  /** Supprime les jetons FCM refusés (UNREGISTERED / 404) par FCM. */
+  async dropFcmTokens(tokens: string[]): Promise<void> {
+    const d = await this.ensure();
+    if (!d || tokens.length === 0) return;
+    let changed = false;
+    for (const p of d.players) {
+      if (p.fcmToken && tokens.includes(p.fcmToken)) {
+        delete p.fcmToken;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await this.persist();
+      this.broadcastRoom();
+    }
+  }
+
+  private async doResign(d: RoomData, playerId: Player): Promise<void> {
+    const before = [...d.state!.active];
+    const prevTurn = d.state!.turn;
+    d.state = resign(d.state!, playerId);
+    d.lastEvent = d.state.lastEvent;
+    d.lastActivity = this.deps.now();
+    if (d.state.result) this.finish(d);
+    else if (d.state.turn !== prevTurn) d.turnDeadline = this.deps.now() + TURN_MS;
+    this.scheduleBot(d);
+    this.pushAfter(d.lastEvent!, false, before);
+    await this.persist();
+    this.broadcastGame();
+  }
+
   private async play(move: Move, auto: boolean): Promise<void> {
     const d = this.data!;
     const now = this.deps.now();
+    const before = [...d.state!.active];
     d.state = applyMove(d.state!, move);
     d.lastEvent = { ...(d.state.lastEvent as GameEvent), ...(auto ? { auto: true } : {}) };
     if (d.state.result) this.finish(d);
     else d.turnDeadline = now + TURN_MS;
     this.scheduleBot(d);
+    this.pushAfter(d.lastEvent, auto, before);
     await this.persist();
     this.broadcastGame();
-    this.pushAfter(d.lastEvent, auto);
   }
 
   private finish(d: RoomData): void {
@@ -477,12 +532,16 @@ export class RoomLogic {
     for (const p of d.players) if (!p.isBot) this.deps.send(p.id, msg);
   }
 
-  private pushAfter(ev: GameEvent, auto: boolean): void {
+  /** Construit les notifications puis supprime les jetons des joueurs partis, éliminés ou, en fin de partie, de tous. */
+  private pushAfter(ev: GameEvent, auto: boolean, before: boolean[]): void {
     const d = this.data!;
     const st = d.state!;
     const name = (id: Player) => d.players.find((p) => p.id === id)?.pseudo ?? `Joueur ${id + 1}`;
     const code = d.code;
     const out: PushMessage[] = [];
+    // Joueur qui vient d'abandonner : plus aucune notification, jeton supprimé tout de suite.
+    const resigned = ev.kind === 'resign' ? ev.player : null;
+    if (resigned !== null) delete d.players.find((p) => p.id === resigned)?.fcmToken;
     const add = (p: PlayerRecord, title: string, body: string, type: PushMessage['data']['type']) => {
       if (p.fcmToken && !p.isBot) out.push({ fcmToken: p.fcmToken, title, body, data: { roomCode: code, type } });
     };
@@ -490,20 +549,22 @@ export class RoomLogic {
       ev.kind === 'move' && ev.move
         ? `${name(ev.player)} : ${ev.move.from} → ${ev.move.to}${ev.captured ? ' (prise)' : ''}${auto ? ' (coup automatique)' : ''}`
         : `${name(ev.player)} a abandonné`;
+    const eliminated = (p: PlayerRecord) => before[p.id] && !st.active[p.id];
     if (st.result) {
       const r = st.result;
       const body = r.winner === null ? 'Partie nulle.' : `${name(r.winner)} remporte la partie !`;
       for (const p of d.players) add(p, 'Partie terminée', body, 'gameOver');
-    } else if (ev.kind === 'resign') {
-      for (const p of d.players) {
-        if (p.id === ev.player) continue;
-        if (p.id === st.turn) add(p, "C'est ton tour !", desc, 'turn');
-        else add(p, `${name(ev.player)} a abandonné`, desc, 'resign');
-      }
+      for (const p of d.players) delete p.fcmToken;
     } else {
       for (const p of d.players) {
-        if (p.id === ev.player) continue;
-        if (p.id === st.turn) add(p, "C'est ton tour !", desc, 'turn');
+        if (p.id === ev.player && ev.kind === 'move' && !eliminated(p)) continue;
+        if (p.id === resigned) continue;
+        if (eliminated(p)) {
+          add(p, 'Tu as été éliminé', desc, 'eliminated');
+          delete p.fcmToken;
+        } else if (!st.active[p.id]) continue;
+        else if (p.id === st.turn) add(p, "C'est ton tour !", desc, 'turn');
+        else if (ev.kind === 'resign') add(p, `${name(ev.player)} a abandonné`, desc, 'resign');
         else add(p, `${name(ev.player)} a joué`, desc, 'move');
       }
     }

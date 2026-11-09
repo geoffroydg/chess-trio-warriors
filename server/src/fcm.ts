@@ -71,8 +71,10 @@ export class FcmClient {
     return json.access_token;
   }
 
-  async send(messages: PushMessage[]): Promise<void> {
-    if (!this.sa || messages.length === 0) return;
+  /** Envoie les messages ; renvoie les jetons que FCM déclare invalides (UNREGISTERED / 404). */
+  async send(messages: PushMessage[]): Promise<string[]> {
+    const invalid: string[] = [];
+    if (!this.sa || messages.length === 0) return invalid;
     try {
       const token = await this.accessToken();
       const url = `https://fcm.googleapis.com/v1/projects/${this.sa.project_id}/messages:send`;
@@ -84,17 +86,22 @@ export class FcmClient {
             body: JSON.stringify({
               message: {
                 token: m.fcmToken,
-                notification: { title: m.title, body: m.body },
-                data: m.data,
-                android: { priority: 'high', notification: { channel_id: 'turns' } },
+                // Data-only : l'app affiche elle-même la notification (et peut la filtrer).
+                data: { ...m.data, title: m.title, body: m.body },
+                android: { priority: 'high' },
               },
             }),
           });
-          if (!res.ok) console.log(`FCM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+          if (!res.ok) {
+            const text = await res.text();
+            console.log(`FCM ${res.status}: ${text.slice(0, 200)}`);
+            if (res.status === 404 || text.includes('UNREGISTERED')) invalid.push(m.fcmToken);
+          }
         }),
       );
     } catch (e) {
       console.log(`FCM erreur : ${String(e)}`);
     }
+    return invalid;
   }
 }

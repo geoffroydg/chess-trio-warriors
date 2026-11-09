@@ -239,8 +239,9 @@ test('abandon : élimination et notification', async () => {
   assert.equal(over.result.winner, 2);
   assert.equal(over.turnDeadline, null);
   assert.deepEqual(over.legalMoves, []);
-  assert.equal(h.pushes.at(-1)!.length, 3);
-  assert.equal(h.pushes.at(-1)![0].data.type, 'gameOver');
+  // 1 a déjà abandonné (jeton supprimé), 0 vient d'abandonner : seul 2 reçoit la fin de partie.
+  assert.deepEqual(h.pushes.at(-1)!.map((m) => [m.fcmToken, m.data.type]), [['t2', 'gameOver']]);
+  assert.ok(h.stored!.players.every((p) => !p.fcmToken));
   await h.send(2, { type: 'move', from: '2e2', to: '2e4' });
   assert.equal(h.last(2, 'error').code, 'gameOver');
 });
@@ -442,4 +443,85 @@ test('BOT_CPU_MS : lecture de la variable d\'env', async () => {
   assert.equal(parseBotCpuMs(undefined), undefined);
   assert.equal(parseBotCpuMs('abc'), undefined);
   assert.equal(parseBotCpuMs('0'), undefined);
+});
+
+test('abandon : plus aucune notification pour celui qui abandonne, et rien pour lui', async () => {
+  const { h } = await fullRoom('twoMates');
+  for (const i of [0, 1, 2]) await h.send(i, { type: 'registerPush', fcmToken: `t${i}` });
+  await h.send(0, { type: 'start' });
+  await h.send(1, { type: 'resign' });
+  assert.ok(h.pushes.at(-1)!.every((m) => m.fcmToken !== 't1'));
+  assert.equal(h.stored!.players[1].fcmToken, undefined);
+  const n = h.pushes.length;
+  await h.send(0, { type: 'move', from: '0e2', to: '0e4' });
+  assert.deepEqual(h.pushes.slice(n).flat().map((m) => m.fcmToken), ['t2']);
+});
+
+test('unregisterPush, jeton unique par siège', async () => {
+  const { h } = await fullRoom();
+  await h.send(0, { type: 'registerPush', fcmToken: 'same' });
+  await h.send(1, { type: 'registerPush', fcmToken: 'same' });
+  assert.equal(h.stored!.players[0].fcmToken, undefined);
+  assert.equal(h.stored!.players[1].fcmToken, 'same');
+  await h.send(1, { type: 'unregisterPush' });
+  assert.equal(h.stored!.players[1].fcmToken, undefined);
+});
+
+test('leave : en cours = abandon + jeton supprimé ; en attente = siège libéré', async () => {
+  const { h } = await fullRoom();
+  for (const i of [0, 1, 2]) await h.send(i, { type: 'registerPush', fcmToken: `t${i}` });
+  await h.send(2, { type: 'leave' });
+  assert.equal(h.stored!.players.length, 2);
+  assert.equal(h.last(0, 'room').players.length, 2);
+  await h.send(2, { type: 'registerPush', fcmToken: 'x' }); // ignoré : plus dans le salon
+  assert.equal(h.stored!.players.length, 2);
+  const h2 = (await fullRoom()).h;
+  for (const i of [0, 1, 2]) await h2.send(i, { type: 'registerPush', fcmToken: `t${i}` });
+  await h2.send(0, { type: 'start' });
+  await h2.send(1, { type: 'leave' });
+  assert.equal(h2.stored!.state!.active[1], false);
+  assert.equal(h2.stored!.players[1].fcmToken, undefined);
+  assert.ok(h2.pushes.at(-1)!.every((m) => m.fcmToken !== 't1'));
+});
+
+test('fin de partie : notification à tous puis suppression de tous les jetons', async () => {
+  const { h } = await fullRoom('firstMate', 3);
+  for (const i of [0, 1, 2]) await h.send(i, { type: 'registerPush', fcmToken: `t${i}` });
+  await h.send(0, { type: 'start' });
+  await h.send(1, { type: 'resign' });
+  await h.send(0, { type: 'resign' });
+  const last = h.pushes.at(-1)!;
+  assert.equal(last[0].data.type, 'gameOver');
+  assert.ok(h.stored!.players.every((p) => !p.fcmToken));
+});
+
+test('twoMates : un joueur maté reçoit au plus une notification finale puis plus rien', async () => {
+  let sawElim = false;
+  for (let seed = 1; seed <= 15 && !sawElim; seed++) {
+    const { h } = await fullRoom('twoMates', seed);
+    for (const i of [0, 1, 2]) await h.send(i, { type: 'registerPush', fcmToken: `t${i}` });
+    await h.send(0, { type: 'start' });
+    const rnd = rngFrom(seed * 31);
+    const tokens = ['t0', 't1', 't2'];
+    const gone = new Set<number>();
+    let n = 0;
+    while (!h.stored!.state!.result && n < 3000) {
+      n++;
+      const g = h.last(0, 'game');
+      const before = h.pushes.length;
+      const act = [...h.stored!.state!.active];
+      const m = g.legalMoves[Math.floor(rnd() * g.legalMoves.length)];
+      await h.send(g.turn, { type: 'move', from: m.from, to: m.to });
+      const batch = h.pushes.slice(before).flat();
+      for (const id of gone) assert.ok(batch.every((x) => x.fcmToken !== tokens[id]), 'notif à un éliminé');
+      for (const i of [0, 1, 2]) {
+        if (act[i] && !h.stored!.state!.active[i]) {
+          gone.add(i);
+          sawElim = true;
+          assert.equal(h.stored!.players[i].fcmToken, undefined);
+        }
+      }
+    }
+  }
+  assert.ok(sawElim);
 });

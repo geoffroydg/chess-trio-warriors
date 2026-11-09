@@ -45,7 +45,9 @@ le serveur renvoie aussitôt `room` puis (si la partie a commencé) `game`.
 | `removeBot` | `seat` | Hôte uniquement, en salle d'attente : retire le bot de ce siège (le siège redevient libre). |
 | `move` | `from`, `to` (cases, ex. `"0e2"`) | Joue un coup (au tour du joueur). Pour un roque, cases du roi. Promotion automatique en dame. |
 | `resign` | — | Abandon : le joueur est éliminé (règles §8). |
-| `registerPush` | `fcmToken` (string, ≤ 4096 car.) | Enregistre le jeton FCM du joueur pour les notifications. |
+| `registerPush` | `fcmToken` (string, ≤ 4096 car.) | Enregistre le jeton FCM du joueur pour les notifications. Un même jeton n'est associé qu'à un siège par salon (il est retiré des autres sièges). |
+| `unregisterPush` | — | Supprime le jeton FCM du joueur dans ce salon. |
+| `leave` | — | Quitte définitivement le salon : partie en cours → équivaut à `resign` (si le joueur est encore en jeu), puis jeton supprimé et sockets du joueur fermés ; salle d'attente → le siège est libéré (salon supprimé s'il ne reste aucun humain). Après `leave`, le serveur ignore les messages de ce siège. |
 | `ping` | — | Le serveur répond `pong`. |
 
 ## 3. Messages serveur → client
@@ -100,12 +102,20 @@ Envoyé à tous après `start` et après chaque coup / abandon / coup automatiqu
 
 ## 5. Notifications push (FCM HTTP v1)
 
-Envoyées à chaque joueur humain ayant un jeton, même connecté (l'app filtre au premier plan). Message `notification` +
-`data { roomCode, type }`, `android.priority = high`, `android.notification.channel_id = "turns"`.
+Envoyées aux joueurs humains ayant un jeton, même connectés (l'app filtre). Messages **data-only** à priorité haute
+(`android.priority = high`, pas de bloc `notification`) : `data { roomCode, type, title, body }` (toutes les valeurs sont des
+chaînes). L'app affiche elle-même la notification locale (canal `turns`) et ignore celles d'un salon qui n'est plus son salon courant.
 
 | `type` | Destinataire | Titre | Corps |
 |--------|--------------|-------|-------|
 | `turn` | joueur suivant | « C'est ton tour ! » | coup de l'adversaire |
-| `move` | autres joueurs (hors auteur) | « {pseudo} a joué » | le coup |
-| `resign` | autres joueurs | « {pseudo} a abandonné » | — |
-| `gameOver` | tous | « Partie terminée » | vainqueur / nulle |
+| `move` | autres joueurs encore en jeu (hors auteur) | « {pseudo} a joué » | le coup |
+| `resign` | autres joueurs encore en jeu | « {pseudo} a abandonné » | — |
+| `eliminated` | joueur éliminé par mat (mode `twoMates`) | « Tu as été éliminé » | le coup |
+| `gameOver` | tous les jetons restants | « Partie terminée » | vainqueur / nulle |
+
+Cycle de vie des jetons :
+- Un joueur qui abandonne (`resign`/`leave`) ne reçoit **aucune** notification pour cet abandon ; son jeton est supprimé aussitôt.
+- Un joueur éliminé par mat reçoit une seule notification `eliminated` (ou `gameOver` si la partie se termine), puis son jeton est supprimé.
+- À la fin de la partie, `gameOver` est envoyé à tous, puis tous les jetons sont supprimés.
+- Un jeton refusé par FCM (`UNREGISTERED` / HTTP 404) est supprimé du salon.

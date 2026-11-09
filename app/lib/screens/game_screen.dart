@@ -85,7 +85,7 @@ class _GameViewState extends State<_GameView> {
         message: 'Tu seras éliminé et tes pièces seront gelées. Cette action est définitive.',
         yes: 'Abandonner',
         no: 'Continuer');
-    if (ok) _app.resign();
+    if (ok) await _app.resign();
   }
 
   Future<void> _quit() async {

@@ -37,6 +37,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifications
       ?..onOpenRoom = openRoom
       ..isShowingRoom = isShowingRoom
+      ..isCurrentRoom = isCurrentRoom
       ..onToken = setFcmToken;
   }
 
@@ -102,6 +103,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (session != null) _connect();
     _syncMusic();
   }
+
+  /// Salon mémorisé (celui dont on accepte les notifications).
+  bool isCurrentRoom(String code) => storage.session?.code == code;
 
   bool isShowingRoom(String code) =>
       inForeground && session?.code == code && (phase == Phase.game || phase == Phase.lobby);
@@ -174,7 +178,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Quitte définitivement le salon : `leave` + `unregisterPush` côté serveur, puis oubli local.
   Future<void> leaveRoom() async {
+    if (_conn != null && connStatus == ConnStatus.connected) {
+      _conn!.send({'type': 'leave'});
+      _conn!.send({'type': 'unregisterPush'});
+      await Future<void>.delayed(const Duration(milliseconds: 200)); // laisse partir les messages
+    }
     _disconnect();
     session = null;
     room = null;
@@ -190,7 +200,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool addBot(int seat, String level) =>
       _conn?.send({'type': 'addBot', 'seat': seat, 'level': level}) ?? false;
   bool removeBot(int seat) => _conn?.send({'type': 'removeBot', 'seat': seat}) ?? false;
-  bool resign() => _conn?.send({'type': 'resign'}) ?? false;
+
+  /// Abandon : `resign` + `unregisterPush`, et le salon n'est plus mémorisé (pas de reprise
+  /// automatique, plus de notifications). La connexion en cours reste ouverte pour regarder.
+  Future<bool> resign() async {
+    final ok = _conn?.send({'type': 'resign'}) ?? false;
+    _conn?.send({'type': 'unregisterPush'});
+    await storage.clearSession();
+    return ok;
+  }
+
   bool sendMove(String from, String to) =>
       _conn?.send({'type': 'move', 'from': from, 'to': to}) ?? false;
 
