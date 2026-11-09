@@ -21,6 +21,10 @@ class Storage {
   bool get debugFps => _prefs.getBool('debug.fps') ?? false;
   Future<void> setDebugFps(bool v) => _prefs.setBool('debug.fps', v);
 
+  /// Recentrer automatiquement sur le dernier coup quand on est zoomé (Réglages).
+  bool get autoRecenter => _prefs.getBool('game.autoRecenter') ?? false;
+  Future<void> setAutoRecenter(bool v) => _prefs.setBool('game.autoRecenter', v);
+
   String? get serverUrl => _prefs.getString('serverUrl');
   Future<void> setServerUrl(String? v) =>
       v == null ? _prefs.remove('serverUrl') : _prefs.setString('serverUrl', v);

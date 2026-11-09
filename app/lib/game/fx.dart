@@ -320,10 +320,16 @@ mixin FxHost on FlameGame {
   int hitstopCount = 0;
   int shakeCount = 0;
 
+  /// Parent des particules (le monde zoomable pour le plateau).
+  Component get fxParent => this;
+
+  /// Faux tant que la caméra bouge : le plateau pré-rendu n'est pas re-rendu.
+  bool get cameraSettled => true;
+
   Future<void> initFx() async {
     FxAtlas.image; // repli procédural prêt immédiatement
     FxAtlas.load(); // textures CC0 des assets (asynchrone)
-    add(ParticleLayer(pool));
+    fxParent.add(ParticleLayer(pool));
     add(FpsOverlay(this));
   }
 

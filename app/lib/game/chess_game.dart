@@ -3,11 +3,13 @@ import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
 import 'package:flame/game.dart';
-import 'package:flutter/painting.dart' show Color, Offset;
+import 'package:flutter/foundation.dart' show ValueNotifier;
+import 'package:flutter/painting.dart' show Color, Offset, Rect, Size;
 
 import '../models/geometry.dart';
 import '../models/protocol.dart';
 import 'arena_backdrop.dart';
+import 'board_camera.dart';
 import 'attacks.dart';
 import 'fx.dart';
 import 'piece_component.dart';
@@ -75,12 +77,30 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
   @override
   String? lastTo;
 
-  // Mise en page courante.
+  // Mise en page courante en « vue entière » (coordonnées monde = écran à zoom ×1).
   double scale = 1;
   Offset origin = Offset.zero;
   bool _laidOut = false;
   List<List<Offset>> screenPolygons = const [];
   List<Offset> screenOutline = const [];
+
+  /// Caméra (zoom/panoramique). Les pièces et effets vivent dans [worldLayer], transformé par
+  /// la caméra ; le plateau est re-rendu à la bonne résolution ; bandeaux et sélecteur de
+  /// promotion restent à l'écran.
+  final BoardCamera boardCamera = BoardCamera();
+  final PositionComponent worldLayer = PositionComponent();
+
+  /// Vrai quand le plateau est zoomé (bouton « vue entière »).
+  final ValueNotifier<bool> zoomed = ValueNotifier(false);
+
+  /// Recentre automatiquement sur le dernier coup (Réglages).
+  bool autoRecenter = false;
+
+  @override
+  Component get fxParent => worldLayer;
+
+  @override
+  bool get cameraSettled => boardCamera.settled;
 
   @override
   ui.Color backgroundColor() => const ui.Color(0x00000000);
@@ -89,6 +109,7 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
   Future<void> onLoad() async {
     await add(ArenaBackdrop());
     await add(board);
+    await add(worldLayer);
     await initFx();
   }
 
@@ -127,7 +148,11 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
         [for (final p in c.polygon) _toScreen(projection.projectOffset(p))],
     ];
     _screenCenters = [for (final c in geometry.cells) _toScreen(projection.project(c.x, c.y))];
-    boardView = BoardView(geometry: geometry, projection: projection, scale: scale, origin: origin);
+    boardCamera.setViewport(
+        Size(size.x, size.y),
+        Rect.fromLTWH(
+            (size.x - w * scale) / 2, (size.y - h * scale) / 2, w * scale, h * scale));
+    _applyCamera();
     _laidOut = true;
     board.size = size;
     board.invalidate();
@@ -137,6 +162,25 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
   }
 
   List<Offset> _screenCenters = const [];
+
+  int _appliedCamera = -1;
+
+  /// Répercute la caméra : transformation du monde et vue du plateau (zoom inclus).
+  void _applyCamera() {
+    worldLayer
+      ..position = Vector2(boardCamera.pan.dx, boardCamera.pan.dy)
+      ..scale = Vector2.all(boardCamera.zoom);
+    boardView = BoardView(
+        geometry: geometry,
+        projection: projection,
+        scale: scale * boardCamera.zoom,
+        origin: boardCamera.pan + origin * boardCamera.zoom);
+    _appliedCamera = boardCamera.version;
+    zoomed.value = boardCamera.zoomed;
+  }
+
+  /// Retour à la vue entière (animé).
+  void resetView() => boardCamera.reset();
 
   @override
   BoardView? boardView;
@@ -152,11 +196,20 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
 
   Offset _toScreen(Offset p) => Offset(origin.dx + p.dx * scale, origin.dy + p.dy * scale);
 
-  Vector2 cellPosition(String id) {
+  /// Position d'une case dans le monde (vue entière) : repère des pièces et des effets.
+  Vector2 worldPosition(String id) {
     final c = geometry.byId(id);
     final p = _toScreen(projection.project(c.x, c.y));
     return Vector2(p.dx, p.dy);
   }
+
+  /// Position d'une case à l'écran, zoom et panoramique compris.
+  Vector2 cellPosition(String id) {
+    final p = boardCamera.toScreen(_toOffset(worldPosition(id)));
+    return Vector2(p.dx, p.dy);
+  }
+
+  static Offset _toOffset(Vector2 v) => Offset(v.x, v.y);
 
   /// Taille utile (normalisée) des cases de chaque anneau : min(épaisseur, largeur d'arc).
   late final List<double> _ringSize = () {
@@ -185,7 +238,7 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
   }
 
   void _place(PieceComponent p, String id) =>
-      p.placeAt(cellPosition(id) + Vector2(0, -pieceRadius(id) * 0.1), pieceRadius(id));
+      p.placeAt(worldPosition(id) + Vector2(0, -pieceRadius(id) * 0.1), pieceRadius(id));
 
   // --- État de jeu ---
 
@@ -246,6 +299,9 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
           removeOnFinish: true,
           onTick: () => showBanner('POIGNÉE OUVERTE !', const Color(0xFF77E8FF), seconds: 1.4, sizeFactor: 0.085)));
     }
+    if (autoRecenter && ev.to != null && boardCamera.zoomed) {
+      boardCamera.centerOn(_toOffset(worldPosition(ev.to!)));
+    }
     if (ev.piece != null && ev.from != null && ev.to != null) {
       onMoveEvent?.call(ev.piece!, ev.from!, ev.to!);
     }
@@ -286,7 +342,7 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
     pool.burst(at.x, at.y, 24, r * 18, r * 0.3, const Color(0xFFFFFFFF), lifeS: 0.6, fx: Fx.spark);
     pool.burst(at.x, at.y, 16, r * 6, r * 0.7, const Color(0x88302838), lifeS: 1.6, glow: false, fx: Fx.smokeB);
     for (var i = 0; i < 3; i++) {
-      add(ShockRing(
+      worldLayer.add(ShockRing(
           center: at + Vector2(0, r * 0.8),
           maxRadius: r * (4 + i * 1.6),
           color: color,
@@ -315,6 +371,8 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
       _pendingSync = false;
       _sync(animate: false);
     }
+    boardCamera.update(dt);
+    if (boardCamera.version != _appliedCamera) _applyCamera();
   }
 
   void _sync({required bool animate}) {
@@ -337,12 +395,12 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
           host: this,
           attacker: attacker,
           victim: victim,
-          destination: cellPosition(ev.to!) + Vector2(0, -pieceRadius(ev.to!) * 0.1),
+          destination: worldPosition(ev.to!) + Vector2(0, -pieceRadius(ev.to!) * 0.1),
           destRadius: pieceRadius(ev.to!),
           onFinished: () => _sequences.remove(seq),
         );
         _sequences.add(seq);
-        add(seq);
+        worldLayer.add(seq);
       } else {
         victim?.removeFromParent();
         _animateMove(ev.from!, ev.to!);
@@ -373,7 +431,7 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
         piece = pieceFactory(want.type, want.owner, id);
         _pieces[id] = piece;
         _place(piece, id);
-        add(piece);
+        worldLayer.add(piece);
       } else {
         piece.type = want.type; // promotion
       }
@@ -423,19 +481,20 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
     _pieces.remove(to)?.removeFromParent();
     p.cellId = to;
     _pieces[to] = p;
-    p.moveTo(cellPosition(to) + Vector2(0, -pieceRadius(to) * 0.1), pieceRadius(to));
+    p.moveTo(worldPosition(to) + Vector2(0, -pieceRadius(to) * 0.1), pieceRadius(to));
   }
 
   // --- Interaction ---
 
   /// Case sous le point (en pixels) : test d'appartenance au polygone projeté du secteur ;
   /// à défaut, case dont le centre est le plus proche dans une petite tolérance.
-  String? cellAt(Offset pos) {
+  String? cellAt(Offset screenPos) {
+    final pos = boardCamera.toWorld(screenPos); // écran → monde
     for (var i = 0; i < screenPolygons.length; i++) {
       if (_contains(screenPolygons[i], pos)) return geometry.cells[i].id;
     }
     String? best;
-    var bestD = scale * 0.06;
+    var bestD = scale * 0.06; // tolérance en pixels de la vue entière
     for (var i = 0; i < _screenCenters.length; i++) {
       final d = (_screenCenters[i] - pos).distance;
       if (d < bestD) {

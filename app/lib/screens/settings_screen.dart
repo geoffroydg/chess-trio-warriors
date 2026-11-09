@@ -126,6 +126,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       context.read<AppState>().storage.setDebugFps(v);
                     },
                   ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.center_focus_strong),
+                    title: const Text('Recentrer automatiquement sur le dernier coup'),
+                    value: context.read<AppState>().storage.autoRecenter,
+                    onChanged: (v) {
+                      context.read<AppState>().storage.setAutoRecenter(v);
+                      setState(() {});
+                    },
+                  ),
                   const SizedBox(height: 8),
                   BigButton(label: 'Tester la connexion', secondary: true, onPressed: _test),
                   const SizedBox(height: 14),

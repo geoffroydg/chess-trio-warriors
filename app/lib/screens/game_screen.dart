@@ -1,8 +1,8 @@
-import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../game/chess_game.dart';
+import '../game/game_view.dart';
 import '../models/geometry.dart';
 import '../models/protocol.dart';
 import '../services/connection.dart';
@@ -61,6 +61,7 @@ class _GameViewState extends State<_GameView> {
       },
       onSelect: (_) => _app.sound.playEffect('select'),
     );
+    _game.autoRecenter = _app.storage.autoRecenter;
     _app.addListener(_onApp);
     _onApp();
   }
@@ -127,7 +128,7 @@ class _GameViewState extends State<_GameView> {
                 child: const Text('Reconnexion…',
                     textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w700)),
               ),
-            Expanded(child: RepaintBoundary(child: GameWidget(game: _game))),
+            Expanded(child: RepaintBoundary(child: ChessGameView(game: _game))),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
               child: Row(

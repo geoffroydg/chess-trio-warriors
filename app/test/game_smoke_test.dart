@@ -107,7 +107,7 @@ void main() {
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 50));
     }
-    WarriorPiece at(String id) => game.children.whereType<WarriorPiece>().firstWhere((p) => p.cellId == id);
+    WarriorPiece at(String id) => game.worldLayer.children.whereType<WarriorPiece>().firstWhere((p) => p.cellId == id);
     expect(at('0d1').animState, AnimState.victory);
     expect(at('0e2').animState, AnimState.victory);
     expect(at('1d1').animState, AnimState.ko);

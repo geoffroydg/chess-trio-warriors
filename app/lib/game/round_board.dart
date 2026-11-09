@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
-import 'package:flame/events.dart';
 import 'package:flutter/animation.dart' show Curves;
 import 'package:flutter/painting.dart';
 
@@ -798,7 +797,7 @@ class RoundBoardPainter {
 
 /// Composant Flame du plateau rond : couche statique pré-rendue en image, médaillon et
 /// surlignages redessinés à chaque image.
-class BoardComponent extends PositionComponent with TapCallbacks {
+class BoardComponent extends PositionComponent {
   BoardComponent(this.host) : super(position: Vector2.zero());
 
   final BoardHost host;
@@ -810,6 +809,7 @@ class BoardComponent extends PositionComponent with TapCallbacks {
   List<bool> _builtActive = const [];
   List<bool> _builtHilts = const [];
   double _builtRatio = 0;
+  BoardView? _builtView;
 
   final List<({String from, String to, double start, Color color})> _trails = [];
   final Map<int, double> _flashes = {};
@@ -834,12 +834,6 @@ class BoardComponent extends PositionComponent with TapCallbacks {
     _flashes.removeWhere((_, t) => _time - t > RoundBoardPainter.hiltFlashLife);
   }
 
-  @override
-  void onTapDown(TapDownEvent event) {
-    final p = event.localPosition;
-    host.handleTap(Offset(p.x, p.y));
-  }
-
   /// Force la reconstruction de la couche statique (mise en page, joueurs gelés).
   void invalidate() => _builtFor = null;
 
@@ -855,6 +849,10 @@ class BoardComponent extends PositionComponent with TapCallbacks {
     final active = host.activePlayers;
     final hilts = host.hilts;
     final ratio = _ratio;
+    final stale = _builtFor != null && !_listEq(_builtFor!, v.matrix);
+    if (stale && !host.cameraSettled && _boolsEq(_builtActive, active) && _boolsEq(_builtHilts, hilts)) {
+      return; // en mouvement : on transforme l'ancienne image (re-rendue à l'arrêt)
+    }
     if (_builtFor != null &&
         _listEq(_builtFor!, v.matrix) &&
         _builtRatio == ratio &&
@@ -885,6 +883,7 @@ class BoardComponent extends PositionComponent with TapCallbacks {
       pic2.dispose();
     }
     _builtFor = v.matrix;
+    _builtView = v;
     _builtActive = List.of(active);
     _builtHilts = List.of(hilts);
     _builtRatio = ratio;
@@ -911,6 +910,15 @@ class BoardComponent extends PositionComponent with TapCallbacks {
     if (v == null) return;
     _ensureStatic(v);
     final img = _image;
+    final bv = _builtView;
+    canvas.save();
+    if (bv != null && bv.scale != v.scale || bv != null && bv.origin != v.origin) {
+      // Transformation affine entre l'image pré-rendue et la vue courante.
+      final k = v.scale / bv.scale;
+      canvas.translate(v.origin.dx, v.origin.dy);
+      canvas.scale(k);
+      canvas.translate(-bv.origin.dx, -bv.origin.dy);
+    }
     if (img != null) {
       final ratio = _builtRatio;
       canvas.drawImageRect(
@@ -922,6 +930,7 @@ class BoardComponent extends PositionComponent with TapCallbacks {
     } else if (_picture != null) {
       canvas.drawPicture(_picture!);
     }
+    canvas.restore();
     canvas.save();
     canvas.transform(v.matrix);
     painter.paintMedallion(canvas, _time);
@@ -972,4 +981,7 @@ abstract class BoardHost {
   String? get lastTo;
   bool hasPiece(String id);
   void handleTap(Offset pos);
+
+  /// Faux pendant un zoom/panoramique : le plateau pré-rendu est alors simplement transformé.
+  bool get cameraSettled;
 }
