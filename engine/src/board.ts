@@ -266,9 +266,9 @@ export const KING_JUMPS: readonly Jump[][] = Array.from({ length: NUM_CELLS }, (
 });
 
 /**
- * Sauts du cavalier : 2 pas verticaux puis 1 pas horizontal, ou 1 pas horizontal puis 2 pas
- * verticaux (le centre se traverse comme pour les autres pièces). Les destinations identiques
- * sont fusionnées. Il n'y a pas de forme « 2 horizontaux + 1 vertical » (règle du jeu).
+ * Sauts du cavalier : les 8 sauts en L, soit 2 pas verticaux + 1 horizontal (tous ordres de
+ * décomposition) ou 2 horizontaux + 1 vertical (tous ordres). Le centre se traverse comme pour
+ * les autres pièces. Les destinations identiques sont fusionnées.
  */
 export const KNIGHT_JUMPS: readonly Jump[][] = Array.from({ length: NUM_CELLS }, (_, c) => {
   const map = new Map();
@@ -282,6 +282,15 @@ export const KNIGHT_JUMPS: readonly Jump[][] = Array.from({ length: NUM_CELLS },
       const h1 = stepH(posOf(c, rd), s);
       const w1 = stepV(h1);
       addJump(map, c, [h1, w1, w1 && stepV(w1)]);
+      // 2 horizontaux + 1 vertical, dans les trois ordres (HHV, HVH, VHH).
+      const hh1 = stepH(posOf(c, rd), s);
+      const hh2 = stepH(hh1, s);
+      addJump(map, c, [hh1, hh2, stepV(hh2)]);
+      const hv = stepV(hh1);
+      addJump(map, c, [hh1, hv, hv && stepH(hv, s)]);
+      const vh = stepV(posOf(c, rd));
+      const vh1 = vh && stepH(vh, s);
+      addJump(map, c, [vh, vh1, vh1 && stepH(vh1, s)]);
     }
   }
   return finishJumps(map);

@@ -87,13 +87,13 @@ s'arrête après 23 cases ; une diagonale qui ferait le tour s'arrête avant sa 
 | **Dame** | Tour + Fou. |
 | **Tour** | Verticales (à travers le centre) et horizontales (circulaires). |
 | **Fou** | Diagonales (à travers le centre, en gardant sa couleur). |
-| **Cavalier** | 2 pas verticaux puis 1 pas horizontal, **ou** 1 pas horizontal puis 2 pas verticaux. Il saute par-dessus les pièces et peut traverser le centre. |
+| **Cavalier** | Les 8 sauts en L : 2 pas verticaux + 1 pas horizontal, **ou** 2 pas horizontaux + 1 pas vertical. Il saute par-dessus les pièces et peut traverser le centre. |
 | **Pion** | voir §5. |
 
-**[Convention] Cavalier** : on ne retient que ces deux formes (pas de « 2 horizontaux +
-1 vertical »), conformément aux règles du jeu physique. Les deux ordres donnent en général
-la même case ; près du centre ils peuvent mener à des cases différentes (toutes sont
-permises). Les destinations identiques sont fusionnées.
+**[Convention] Cavalier** : les deux formes de L sont permises (2 verticaux + 1 horizontal,
+2 horizontaux + 1 vertical), quel que soit l'ordre de décomposition. Près du centre les
+décompositions peuvent mener à des cases différentes (toutes sont permises). Les destinations
+identiques sont fusionnées. Un saut ne peut jamais finir sur une pièce de son équipe.
 
 Les pièces à longue portée s'arrêtent à la première pièce rencontrée (qu'elles peuvent
 prendre si elle est adverse, voir les épées). Le médaillon n'arrête rien.
@@ -121,8 +121,8 @@ prendre si elle est adverse, voir les épées). Le médaillon n'arrête rien.
 - Une poignée **fermée** interdit à toute pièce de la traverser par un pas **horizontal** ou
   **diagonal** (tout pas qui franchit la frontière avec une extrémité sur l'anneau 1, y compris
   le pas horizontal du cavalier). Le coup est illégal.
-- **[Convention] Cavalier** : un saut dont l'une des deux décompositions (verticale puis
-  horizontale, ou l'inverse) fait son pas horizontal à travers une poignée est considéré
+- **[Convention] Cavalier** : un saut dont l'une des décompositions (quel que soit l'ordre
+  des pas verticaux et horizontaux) fait un pas horizontal à travers une poignée est considéré
   comme franchissant cette poignée.
 - Une poignée **s'ouvre définitivement** quand :
   1. une équipe adjacente est **éliminée** (ses 2 poignées s'ouvrent) ;

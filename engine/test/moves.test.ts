@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyMove, customState, initialState, legalMoves, pieceAt } from '../src/index.ts';
+import { applyMove, customState, parseCell, initialState, legalMoves, pieceAt } from '../src/index.ts';
 import type { CustomPiece, GameState } from '../src/index.ts';
 import { at, mv, sorted, targets } from './helpers.ts';
 
+const cellIndexOf = parseCell;
 const KINGS: CustomPiece[] = [
   { cell: '0d1', type: 'K', owner: 0 },
   { cell: '1d1', type: 'K', owner: 1 },
@@ -71,9 +72,9 @@ test('dame et roi à travers le centre ; le roi ne se met pas en échec', () => 
   assert.ok(!targets(k2, '0d6').includes('0d5'));
 });
 
-test('cavalier : 2 verticaux + 1 horizontal ou 1 horizontal + 2 verticaux, à travers le centre', () => {
+test('cavalier : les 8 sauts en L (2V+1H et 2H+1V), à travers le centre', () => {
   const s = pos([{ cell: '0d5', type: 'N', owner: 0 }]);
-  assert.deepEqual(targets(s, '0d5'), sorted(['0c3', '0e3', '1a6', '2g6']));
+  assert.deepEqual(targets(s, '0d5'), sorted(['0c3', '0e3', '1a6', '2g6', '0b4', '0b6', '0f4', '0f6']));
   applyMove(s, mv('0d5', '1a6'));
   const after = applyMove(s, mv('0d5', '2g6'));
   assert.equal(after.lastEvent?.crossedCenter, true);
@@ -200,4 +201,50 @@ test('roque : petit roque côté a, grand roque côté h ; cases contrôlées in
   // Une tour déplacée perd son droit.
   const moved = applyMove(s, mv('0a1', '0a2'));
   assert.deepEqual(moved.castling[0], { king: false, queen: true });
+});
+
+const knight = (cell: string, extra: CustomPiece[] = [], opts: Parameters<typeof customState>[2] = {}) =>
+  pos([{ cell, type: 'N', owner: 0 }, ...extra], opts);
+
+test('cavalier : nombre de destinations (centre du secteur, anneau 1, anneau 6 avec centre)', () => {
+  // Centre du secteur : 8 sauts, les deux formes de L.
+  assert.deepEqual(targets(knight('0d3'), '0d3'), sorted(['0b2', '0b4', '0c1', '0c5', '0e1', '0e5', '0f2', '0f4']));
+  // Anneau 1 près d'une épée (poignée fermée) : les sauts qui la franchissent sont interdits.
+  assert.deepEqual(targets(knight('0a1'), '0a1'), ['0b3', '0c2']);
+  assert.deepEqual(targets(knight('0h1'), '0h1'), ['0f2', '0g3']);
+  // Anneau 6 : 8 sauts dont 4 à travers le centre.
+  const t6 = targets(knight('0d6'), '0d6');
+  assert.equal(t6.length, 8);
+  assert.deepEqual(t6, sorted(['0b5', '0c4', '0e4', '0f5', '1a5', '1b6', '2f6', '2g5']));
+});
+
+test('cavalier : poignée ouverte, le franchissement passe mais ne prend pas', () => {
+  const open: [boolean, boolean, boolean] = [true, true, true];
+  const free = knight('0a1', [], { hilts: open });
+  assert.equal(targets(free, '0a1').length, 4);
+  assert.ok(targets(free, '0a1').includes('1h3'));
+  // Une pièce adverse derrière la poignée ne peut pas être prise.
+  const blocked = knight('0a1', [{ cell: '1h3', type: 'P', owner: 1 }], { hilts: open });
+  assert.ok(!targets(blocked, '0a1').includes('1h3'));
+  // Un saut sans poignée peut prendre une pièce adverse, jamais une pièce de son équipe.
+  const cap = knight('0d3', [
+    { cell: '0b4', type: 'P', owner: 1 },
+    { cell: '0f4', type: 'P', owner: 0 },
+  ]);
+  assert.ok(targets(cap, '0d3').includes('0b4'));
+  assert.ok(!targets(cap, '0d3').includes('0f4'));
+});
+
+test('cavalier : aucune prise adverse au premier coup depuis la position initiale', () => {
+  const s = initialState('twoMates');
+  const caps = legalMoves(s).filter((m) => s.board[cellIndexOf(m.to)] !== null);
+  assert.deepEqual(caps, []);
+  for (const p of [0, 1, 2] as const) {
+    const t = initialState('twoMates');
+    const st = { ...t, turn: p };
+    for (const m of legalMoves(st)) assert.equal(st.board[cellIndexOf(m.to)], null);
+  }
+  // Les cavaliers de départ n'ont que les sauts vers l'avant.
+  assert.deepEqual(targets(s, '0b1'), ['0a3', '0c3']);
+  assert.deepEqual(targets(s, '0g1'), ['0f3', '0h3']);
 });

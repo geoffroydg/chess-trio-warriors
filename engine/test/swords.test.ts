@@ -28,7 +28,7 @@ test('poignée fermée : aucun pas horizontal ou diagonal ne la franchit sur l�
   assert.ok(targets(s, '0a2').includes('1h2'));
   // Cavalier en 0a1 : 0a1 → 1h3 se décompose en « 1 horizontal (anneau 1, poignée) + 2 verticaux » : interdit.
   const n = customState('twoMates', [...KINGS, { cell: '0a1', type: 'N', owner: 0 }]);
-  assert.deepEqual(targets(n, '0a1'), ['0b3']);
+  assert.deepEqual(targets(n, '0a1'), ['0b3', '0c2']);
   const n3 = customState('twoMates', [...KINGS, { cell: '0a3', type: 'N', owner: 0 }]);
   assert.ok(!targets(n3, '0a3').includes('1h1'));
   assert.ok(targets(n3, '0a3').includes('1h5')); // loin de l'anneau 1 : pas de poignée

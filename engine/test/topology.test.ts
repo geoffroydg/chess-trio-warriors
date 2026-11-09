@@ -133,7 +133,7 @@ test('trajets réversibles (symétrie des attaques) et cavalier à travers le ce
   }
   // 0d5 : 2 pas vers le centre (0d6 puis 2h6), puis 1 pas horizontal → 1a6 / 2g6.
   const n = names(KNIGHT_JUMPS[parseCell('0d5')].map((j) => j.to)).sort();
-  assert.deepEqual(n, ['0c3', '0e3', '1a6', '2g6']);
+  assert.deepEqual(n, ['0b4', '0b6', '0c3', '0e3', '0f4', '0f6', '1a6', '2g6']);
   assert.ok(KNIGHT_JUMPS[parseCell('0d5')].find((j) => cellName(j.to) === '1a6')!.center);
   // Le cavalier change de couleur.
   for (const j of KNIGHT_JUMPS[parseCell('0b1')]) assert.notEqual(isLight(j.to), isLight(parseCell('0b1')));
