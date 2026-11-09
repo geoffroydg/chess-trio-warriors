@@ -6,7 +6,8 @@ Tout l'audio du jeu est généré automatiquement par `scripts/audio/` (workflow
   [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) (`fr_FR-tom-medium`, `fr_FR-siwis-medium`,
   `fr_FR-upmc-medium`, `fr_FR-gilles-low`), transformées par ffmpeg. Chaque voix garde sa propre licence
   (consulter les fiches de modèle) ; les répliques sont écrites pour ce jeu.
-- **Musique** : [MusicGen](https://huggingface.co/facebook/musicgen-small) (`facebook/musicgen-small`, Meta),
-  poids sous licence **CC-BY-NC 4.0** : utilisation non commerciale uniquement (jeu gratuit). Si MusicGen échoue,
-  un repli procédural (numpy, sans licence particulière) est utilisé.
+- **Musique** : composition algorithmique originale écrite pour ce jeu (`scripts/audio/compose.py`, `scores.py` :
+  aucune mélodie ni thème existant), rendue avec [FluidSynth](https://www.fluidsynth.org/) (LGPL-2.1, outil de rendu
+  non distribué) et la soundfont General MIDI **FluidR3_GM** de Frank Wen (licence **MIT**, paquet Debian/Ubuntu
+  `fluid-soundfont-gm`), mixée avec ffmpeg.
 - **Effets sonores** : synthèse procédurale numpy (`scripts/audio/gen_sfx.py`).

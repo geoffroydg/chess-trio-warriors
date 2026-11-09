@@ -6,6 +6,12 @@ on:
     paths:
       - 'scripts/audio/**'
   workflow_dispatch:
+    inputs:
+      regen:
+        description: "Quoi régénérer : auto (musique + ce qui manque), all, music"
+        default: auto
+        type: choice
+        options: [auto, all, music]
 
 permissions:
   contents: write
@@ -18,38 +24,60 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
+    env:
+      # auto : la musique est toujours recomposée ; voix et effets seulement s'ils
+      # manquent. all : tout. music : musique seule. Variable de dépôt AUDIO_REGEN
+      # pour changer le défaut des déclenchements par push.
+      REGEN: ${{ inputs.regen || vars.AUDIO_REGEN || 'auto' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Que régénérer ?
+        id: plan
+        run: |
+          nvoice=$(ls app/assets/audio/voice/*.ogg 2>/dev/null | wc -l)
+          nsfx=$(ls app/assets/audio/sfx/*.ogg 2>/dev/null | wc -l)
+          voices=false; sfx=false
+          if [ "$REGEN" = all ]; then voices=true; sfx=true; fi
+          if [ "$REGEN" = auto ]; then
+            [ "$nvoice" -lt 70 ] && voices=true
+            [ "$nsfx" -lt 7 ] && sfx=true
+          fi
+          echo "voices=$voices" >> "$GITHUB_OUTPUT"
+          echo "sfx=$sfx" >> "$GITHUB_OUTPUT"
+          echo "REGEN=$REGEN voix=$voices ($nvoice fichiers) effets=$sfx ($nsfx fichiers)"
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: ffmpeg
+      - name: ffmpeg, FluidSynth, soundfont FluidR3_GM (MIT)
         run: |
-          command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fluidsynth fluid-soundfont-gm
           ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libvorbis
+          ls -l /usr/share/sounds/sf2/FluidR3_GM.sf2
 
-      - name: Cache modèles (Piper, Hugging Face)
+      - name: Cache voix Piper
+        if: steps.plan.outputs.voices == 'true'
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/huggingface
-            ~/piper-voices
+          path: ~/piper-voices
           key: audio-models-v1
 
       - name: Dépendances Python
         run: |
           python -m pip install --upgrade pip
-          pip install numpy piper-tts
-          pip install torch --index-url https://download.pytorch.org/whl/cpu || true
-          pip install transformers scipy || true
+          pip install mido numpy
+          if [ "${{ steps.plan.outputs.voices }}" = true ]; then pip install piper-tts; fi
 
       - name: Effets sonores (numpy)
+        if: steps.plan.outputs.sfx == 'true'
         run: python -I scripts/audio/gen_sfx.py
 
       - name: Voix (Piper)
+        if: steps.plan.outputs.voices == 'true'
         continue-on-error: true
         env:
           PIPER_VOICES: ~/piper-voices
@@ -57,18 +85,23 @@ jobs:
           export PIPER_VOICES="$HOME/piper-voices"
           python -I scripts/audio/gen_voice.py
 
-      - name: Musique (MusicGen, repli procédural)
-        continue-on-error: true
-        env:
-          MUSICGEN_TIMEOUT: '1200'
-        run: python -I scripts/audio/gen_music.py
+      - name: Musique composée (MIDI -> FluidSynth -> ffmpeg)
+        run: |
+          python -I scripts/audio/gen_music.py
+          du -ch app/assets/audio/music/*.ogg | tail -1
+
+      - name: MIDI des morceaux (contrôle)
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-midi
+          path: scripts/audio/out/*.mid
 
       - name: Commit des fichiers audio
         id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/assets/audio
+          git add -A app/assets/audio
           if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0

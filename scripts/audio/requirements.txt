@@ -1,4 +1,3 @@
+mido
 numpy
 piper-tts
-transformers
-scipy

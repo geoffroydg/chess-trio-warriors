@@ -17,11 +17,17 @@ class _Track {
   String? name;
   double level = 0;
   double target = 0;
+  double rate = 0.05; // variation de niveau par pas de 50 ms
 }
 
-/// Sons du jeu (étape 4b) : musique avec fondu, voix par personnage en file
-/// d'attente avec ducking, effets. Ne lève jamais d'erreur si un fichier ou
-/// le lecteur audio est absent. Fichiers attendus : assets/audio/README.md.
+/// Sons du jeu (étape 4b) : musique avec fondus enchaînés, voix par personnage
+/// en file d'attente avec ducking, effets. Ne lève jamais d'erreur si un fichier
+/// ou le lecteur audio est absent. Fichiers attendus : assets/audio/README.md.
+///
+/// Musique : `menu` hors partie (rebouclé par fondu enchaîné), en partie une
+/// playlist aléatoire de `game_1..6` sans répétition jusqu'à épuisement avec
+/// fondus enchaînés de 4 s, `check_sting` par-dessus lors d'un échec,
+/// `victory` / `defeat` en fin de partie.
 class SoundService {
   SoundService({AudioPlayer Function()? playerFactory, Random? random})
       : _playerFactory = playerFactory ?? AudioPlayer.new,
@@ -34,7 +40,10 @@ class SoundService {
   static const _fade = Duration(milliseconds: 50);
   static const _duckLevel = 0.35;
   static const _maxQueue = 3;
-  static const _loopedMusic = {'menu', 'battle', 'tension'};
+  static const _gameTracks = ['game_1', 'game_2', 'game_3', 'game_4', 'game_5', 'game_6'];
+  static const _crossfade = Duration(seconds: 4);
+  static const _screenFade = Duration(milliseconds: 1500);
+  static const _endFade = Duration(milliseconds: 800);
   static const _sfxAliases = {
     'select': 'aura',
     'move': 'dash',
@@ -45,7 +54,7 @@ class SoundService {
   };
 
   // Réglages (persistés).
-  double musicVolume = 0.6;
+  double musicVolume = 0.35;
   double voiceVolume = 1.0;
   double sfxVolume = 0.8;
   bool muted = false;
@@ -55,7 +64,12 @@ class SoundService {
   Future<void>? _loading;
   final List<_Track> _tracks = [];
   int _active = 0;
-  String? _currentMusic;
+  String? _currentMusic; // 'menu', 'game', 'victory', 'defeat'
+  final List<String> _bag = [];
+  String? _lastGameTrack;
+  Timer? _watch;
+  bool _advancing = false;
+  AudioPlayer? _sting;
   Timer? _ticker;
   double _duck = 1;
   double _duckTarget = 1;
@@ -76,7 +90,7 @@ class SoundService {
     return _loading ??= () async {
       try {
         final p = await SharedPreferences.getInstance();
-        musicVolume = (p.getDouble('snd_music') ?? musicVolume).clamp(0, 1).toDouble();
+        musicVolume = (p.getDouble(_musicKey) ?? musicVolume).clamp(0, 1).toDouble();
         voiceVolume = (p.getDouble('snd_voice') ?? voiceVolume).clamp(0, 1).toDouble();
         sfxVolume = (p.getDouble('snd_sfx') ?? sfxVolume).clamp(0, 1).toDouble();
         muted = p.getBool('snd_muted') ?? muted;
@@ -88,7 +102,7 @@ class SoundService {
   Future<void> _save() async {
     try {
       final p = await SharedPreferences.getInstance();
-      await p.setDouble('snd_music', musicVolume);
+      await p.setDouble(_musicKey, musicVolume);
       await p.setDouble('snd_voice', voiceVolume);
       await p.setDouble('snd_sfx', sfxVolume);
       await p.setBool('snd_muted', muted);
@@ -124,6 +138,9 @@ class SoundService {
     _applyVolumes();
     await _save();
   }
+
+  // Nouvelle clé : le volume musique par défaut a été abaissé avec la nouvelle musique.
+  static const _musicKey = 'snd_music_v2';
 
   // ---------------------------------------------------------------- assets
 
@@ -180,20 +197,21 @@ class SoundService {
 
   double _trackVolume(_Track t) => muted ? 0 : (t.level * musicVolume * _duck).clamp(0, 1).toDouble();
 
+  static double _rateFor(Duration d) => _fade.inMilliseconds / max(1, d.inMilliseconds);
+
   void _startTicker() {
     _ticker ??= Timer.periodic(_fade, (_) => _step());
   }
 
   void _step() {
     var busy = false;
-    const k = 0.05; // 1 s pour un fondu complet
     if (_duck != _duckTarget) {
       _duck = _duckTarget > _duck ? min(_duckTarget, _duck + 0.1) : max(_duckTarget, _duck - 0.1);
       busy = busy || _duck != _duckTarget;
     }
     for (final t in _tracks) {
       if (t.level != t.target) {
-        t.level = t.target > t.level ? min(t.target, t.level + k) : max(t.target, t.level - k);
+        t.level = t.target > t.level ? min(t.target, t.level + t.rate) : max(t.target, t.level - t.rate);
         busy = busy || t.level != t.target;
       }
       _safe(() => t.player.setVolume(_trackVolume(t)));
@@ -208,34 +226,106 @@ class SoundService {
     }
   }
 
-  /// Musique de fond : 'menu', 'battle', 'tension' ou 'victory' (fondu enchaîné).
+  /// Musique de fond : 'menu' (écrans hors partie), 'game' (playlist de partie ;
+  /// anciens noms 'battle' / 'tension' acceptés), 'victory' ou 'defeat'.
   Future<void> playMusic(String name) async {
-    if (name == 'game') name = 'battle';
+    if (name == 'battle' || name == 'tension') name = 'game';
     if (_currentMusic == name || _disposed) return;
     await loadSettings();
     _currentMusic = name;
-    final path = 'music/$name.$_ext';
-    try {
-      if (!await _exists(path)) {
-        _fadeOutAll();
-        return;
-      }
+    if (name == 'game') {
+      await _playFile(await _nextGameTrack(), _screenFade);
+    } else {
+      final ok = await _exists('music/$name.$_ext');
       if (_currentMusic != name) return; // changé pendant l'attente
-      for (final t in _tracks) {
-        t.target = 0;
+      final fast = name == 'victory' || name == 'defeat';
+      await _playFile(ok ? name : null, fast ? _endFade : _screenFade);
+    }
+  }
+
+  /// Prochain morceau de partie : tirage sans remise parmi les fichiers présents,
+  /// pas deux fois le même d'affilée lors du renouvellement du sac.
+  Future<String?> _nextGameTrack() async {
+    if (_bag.isEmpty) {
+      final assets = await _loadAssets();
+      final all = _gameTracks.where((n) => assets.contains('assets/audio/music/$n.$_ext')).toList();
+      if (all.isEmpty) return null;
+      all.shuffle(_rng);
+      if (all.length > 1 && all.first == _lastGameTrack) {
+        all.add(all.removeAt(0));
       }
+      _bag.addAll(all);
+    }
+    final n = _bag.removeAt(0);
+    _lastGameTrack = n;
+    return n;
+  }
+
+  /// Fondu enchaîné vers [file] (null = fondu vers le silence).
+  Future<void> _playFile(String? file, Duration fade) async {
+    final mode = _currentMusic;
+    for (final t in _tracks) {
+      t.target = 0;
+      t.rate = _rateFor(fade);
+    }
+    if (_tracks.any((t) => t.level != t.target)) _startTicker();
+    if (file == null) {
+      _stopWatch();
+      return;
+    }
+    try {
       _active = (_active + 1) % 2;
       final t = _track(_active);
-      await t.player.stop();
-      await t.player.setReleaseMode(_loopedMusic.contains(name) ? ReleaseMode.loop : ReleaseMode.release);
-      t.name = name;
+      t.target = 0;
       t.level = 0;
+      await t.player.stop();
+      await t.player.setReleaseMode(ReleaseMode.release);
+      if (_currentMusic != mode || _disposed) return;
+      t.name = file;
+      t.rate = _rateFor(fade);
       t.target = 1;
       await t.player.setVolume(0);
-      await t.player.play(AssetSource('audio/$path'));
+      await t.player.play(AssetSource('audio/music/$file.$_ext'));
       _startTicker();
+      if (mode == 'menu' || mode == 'game') _startWatch();
     } catch (e) {
       if (kDebugMode) debugPrint('SoundService: $e');
+    }
+  }
+
+  /// Surveille la fin du morceau courant pour lancer le suivant 4 s avant
+  /// (playlist de partie, ou menu rebouclé), sans blanc.
+  void _startWatch() {
+    _watch ??= Timer.periodic(const Duration(milliseconds: 500), (_) => _checkEnd());
+  }
+
+  void _stopWatch() {
+    _watch?.cancel();
+    _watch = null;
+  }
+
+  Future<void> _checkEnd() async {
+    final mode = _currentMusic;
+    if (_advancing || _disposed || (mode != 'menu' && mode != 'game')) {
+      if (mode != 'menu' && mode != 'game') _stopWatch();
+      return;
+    }
+    final t = _track(_active);
+    if (t.name == null) return;
+    _advancing = true;
+    try {
+      final pos = await t.player.getCurrentPosition();
+      final dur = await t.player.getDuration();
+      if (pos == null || dur == null || dur == Duration.zero) return;
+      final ended = t.player.state == PlayerState.completed;
+      if (ended || dur - pos <= _crossfade) {
+        final next = mode == 'game' ? await _nextGameTrack() : 'menu';
+        if (_currentMusic == mode) await _playFile(next, _crossfade);
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('SoundService: $e');
+    } finally {
+      _advancing = false;
     }
   }
 
@@ -243,12 +333,29 @@ class SoundService {
     for (final t in _tracks) {
       t.target = 0;
     }
+    _stopWatch();
     _startTicker();
   }
 
   Future<void> stopMusic() async {
     _currentMusic = null;
     _fadeOutAll();
+  }
+
+  /// Petite touche dramatique (taiko + cordes) jouée par-dessus la musique.
+  Future<void> _playSting() async {
+    await loadSettings();
+    if (muted || _disposed) return;
+    try {
+      if (!await _exists('music/check_sting.$_ext')) return;
+      final p = _sting ??= _playerFactory();
+      await p.stop();
+      await p.setReleaseMode(ReleaseMode.release);
+      await p.setVolume(min(1.0, musicVolume * 1.6));
+      await p.play(AssetSource('audio/music/check_sting.$_ext'));
+    } catch (e) {
+      if (kDebugMode) debugPrint('SoundService: $e');
+    }
   }
 
   // ---------------------------------------------------------------- effets
@@ -330,10 +437,6 @@ class SoundService {
 
   // ---------------------------------------------------------------- évènements de jeu
 
-  void _relaxTension() {
-    if (_currentMusic == 'tension') playMusic('battle');
-  }
-
   /// Cri de combat (kiai) générique, une fois sur quatre.
   bool _kiai() {
     if (_rng.nextInt(4) != 0) return false;
@@ -342,13 +445,11 @@ class SoundService {
   }
 
   void onMove(PieceType pieceType) {
-    _relaxTension();
     playEffect('dash');
     if (!_kiai()) _enqueue('voice/${_name(pieceType)}_move', droppable: true);
   }
 
   void onCapture(PieceType attackerType, PieceType victimType) {
-    _relaxTension();
     playEffect('impact');
     _enqueue('voice/${_name(attackerType)}_capture');
     if (_rng.nextBool()) _enqueue('voice/${_name(victimType)}_captured');
@@ -356,7 +457,7 @@ class SoundService {
 
   void onCheck(PieceType giverType) {
     playEffect('beam');
-    playMusic('tension');
+    _playSting();
     _enqueue('voice/${_name(giverType)}_check');
     _enqueue('voice/announcer_check.$_ext', variants: false);
   }
@@ -388,19 +489,16 @@ class SoundService {
 
   void onGameOver(bool won) {
     _lastTick = -1;
-    if (won) {
-      playMusic('victory');
-      _enqueue('voice/announcer_victory.$_ext', variants: false);
-    } else {
-      stopMusic();
-    }
+    playMusic(won ? 'victory' : 'defeat');
+    if (won) _enqueue('voice/announcer_victory.$_ext', variants: false);
   }
 
   Future<void> dispose() async {
     _disposed = true;
     _ticker?.cancel();
+    _stopWatch();
     _queue.clear();
-    final all = <AudioPlayer>[..._tracks.map((t) => t.player), ..._sfxPool, ?_voice];
+    final all = <AudioPlayer>[..._tracks.map((t) => t.player), ..._sfxPool, ?_voice, ?_sting];
     for (final p in all) {
       await _safe(() => p.dispose());
     }

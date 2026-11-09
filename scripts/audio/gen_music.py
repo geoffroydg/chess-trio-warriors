@@ -1,311 +1,209 @@
-"""Musique -> app/assets/audio/music/{menu,battle,tension,victory}.ogg
+"""Musique orchestrale composée -> app/assets/audio/music/*.ogg
 
-MusicGen (facebook/musicgen-small, CPU) avec repli procédural numpy/Python si
-MusicGen est absent, échoue ou dépasse le temps imparti (MUSICGEN_TIMEOUT, 900 s
-par morceau). Boucles propres par fondu croisé fin -> début (sauf victory).
+Chaîne : partitions algorithmiques (scores.py / compose.py, graine fixe par
+morceau) -> MIDI (scripts/audio/out/*.mid) -> FluidSynth + soundfont General
+MIDI FluidR3_GM (MIT) -> ffmpeg (réverbération de salle douce par convolution,
+EQ, compression légère, loudnorm 2 passes, fondus) -> OGG Vorbis stéréo 44,1 kHz.
 
-Usage : python -I scripts/audio/gen_music.py [dossier_sortie] [--fallback-only]
+Usage : python -I scripts/audio/gen_music.py [dossier_sortie] [--only menu,game_1] [--midi-only]
+Prérequis : pip install mido numpy ; apt install fluidsynth fluid-soundfont-gm ffmpeg.
+Variable SOUNDFONT : chemin d'une autre soundfont .sf2.
 """
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import wave
 
-import numpy as np
-
-SR = 32000  # fréquence de MusicGen
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-TIMEOUT = int(os.environ.get('MUSICGEN_TIMEOUT', '900'))
+sys.path.insert(0, HERE)  # python -I n'ajoute pas le dossier du script
 
-TRACKS = {
-    'menu': dict(seconds=30, loop=True, bpm=100, style='heroic',
-                 prompt='heroic 90s anime opening theme, warm distorted electric guitars, '
-                        'soaring brass, steady drums, hopeful, epic, instrumental'),
-    'battle': dict(seconds=30, loop=True, bpm=160, style='battle',
-                   prompt='energetic 90s anime battle rock, distorted electric guitars, '
-                          'brass stabs, fast drums, heroic, intense, instrumental'),
-    'tension': dict(seconds=20, loop=True, bpm=130, style='tension',
-                    prompt='tense dark anime showdown, pulsing bass, low distorted guitar, '
-                           'ominous brass, driving drums, suspense, instrumental'),
-    'victory': dict(seconds=10, loop=False, bpm=120, style='victory',
-                    prompt='triumphant victory fanfare, bright brass, electric guitar, '
-                           'big drums, 90s anime, heroic, instrumental'),
-}
+import numpy as np  # noqa: E402
 
+import scores  # noqa: E402
 
-# ------------------------------------------------------------------ utilitaires
-def lowpass(x, cutoff):
-    a = 1 - np.exp(-2 * np.pi * cutoff / SR)
-    y = np.empty_like(x)
-    s = 0.0
-    for i in range(len(x)):
-        s += a * (x[i] - s)
-        y[i] = s
-    return y
+SR = 44100
+SF_CANDIDATES = [
+    os.environ.get('SOUNDFONT', ''),
+    '/usr/share/sounds/sf2/FluidR3_GM.sf2',
+    '/usr/share/soundfonts/FluidR3_GM.sf2',
+    '/usr/share/sounds/sf2/default-GM.sf2',
+]
+# Cible de sonie (LUFS intégrés) : musique de jeu discrète, jingles un peu plus présents.
+LOUDNESS = {'victory': -18, 'defeat': -19, 'check_sting': -17}
+MAX_LEN = {'victory': 16.0, 'defeat': 11.0, 'check_sting': 3.2}
+# Qualité Vorbis (~55-60 kb/s sur cette musique douce) : tient les 12 Mo pour ~23 min.
+QUALITY = os.environ.get('MUSIC_VORBIS_Q', '0.6')
+FADE_OUT = {'check_sting': 0.6, 'victory': 2.0, 'defeat': 2.0}
 
 
-def saw(freq, n, detune=0.0):
-    ph = np.cumsum(np.full(n, freq * (1 + detune) / SR))
-    return 2 * (ph % 1) - 1
+def soundfont():
+    for p in SF_CANDIDATES:
+        if p and os.path.isfile(p):
+            return p
+    raise SystemExit('soundfont FluidR3_GM introuvable (apt install fluid-soundfont-gm ou SOUNDFONT=...)')
 
 
-def adsr(n, a=0.005, r=0.05, decay=0.0):
-    e = np.exp(-decay * np.arange(n) / SR) if decay else np.ones(n)
-    na, nr = max(1, min(n, int(a * SR))), max(1, min(n, int(r * SR)))
-    e[:na] *= np.linspace(0, 1, na)
-    e[-nr:] *= np.linspace(1, 0, nr)
-    return e
+def write_wav(path, x, sr=SR):
+    pcm = (np.clip(x, -1, 1) * 32767).astype('<i2')
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(x.shape[1])
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
 
 
-def add(buf, start, sig, gain=1.0, pan=0.0):
-    end = min(len(buf), start + len(sig))
-    if end <= start:
-        return
-    s = sig[:end - start] * gain
-    buf[start:end, 0] += s * (1 - max(0, pan))
-    buf[start:end, 1] += s * (1 + min(0, pan))
+def read_wav(path):
+    with wave.open(path, 'rb') as w:
+        n, ch, sr = w.getnframes(), w.getnchannels(), w.getframerate()
+        x = np.frombuffer(w.readframes(n), dtype='<i2').astype(np.float64) / 32768
+    return x.reshape(-1, ch), sr
 
 
-def hz(midi):
-    return 440.0 * 2 ** ((midi - 69) / 12)
-
-
-# ------------------------------------------------------------------ batterie / instruments
-def kick():
-    n = int(0.25 * SR)
+def make_ir(path, rt60=2.1, seed=5):
+    """Réponse impulsionnelle de salle douce : pré-délai, premières réflexions,
+    queue de bruit décorrélée L/R qui s'assombrit avec le temps."""
+    rng = np.random.default_rng(seed)
+    n = int(SR * rt60 * 1.1)
     t = np.arange(n) / SR
-    ph = np.cumsum(45 + 110 * np.exp(-t * 28)) / SR * 2 * np.pi
-    return np.sin(ph) * np.exp(-t * 14) * 1.4
+    out = np.zeros((n, 2))
+    pre = int(0.018 * SR)
+    env = np.exp(-6.91 * t / rt60)
+    for c in range(2):
+        noise = rng.standard_normal(n)
+        # passe-bas progressif : mélange d'un bruit lissé (sombre) et brut
+        k = 24
+        dark = np.convolve(noise, np.ones(k) / k, mode='same') * np.sqrt(k)
+        mix = np.clip(t / 0.6, 0, 1)
+        tail = (noise * (1 - mix) * 0.6 + dark * mix) * env
+        tail[:pre] = 0
+        out[:, c] = tail
+        for d, g in [(0.011, 0.5), (0.023, 0.35), (0.031, 0.3), (0.047, 0.22), (0.061, 0.18)]:
+            i = int((d + 0.004 * c) * SR)
+            out[i, c] += g * (1 if rng.random() > 0.5 else -1) * 3
+    out /= np.sqrt(np.sum(out ** 2) / 2)
+    write_wav(path, out * 0.25)
 
 
-def snare(rng):
-    n = int(0.22 * SR)
-    t = np.arange(n) / SR
-    noise = rng.standard_normal(n) * np.exp(-t * 20)
-    return noise * 0.8 + np.sin(2 * np.pi * 190 * t) * np.exp(-t * 25) * 0.6
+def run(cmd, **kw):
+    return subprocess.run(cmd, check=True, **kw)
 
 
-def hat(rng, open_=False):
-    n = int((0.18 if open_ else 0.05) * SR)
-    t = np.arange(n) / SR
-    x = np.diff(rng.standard_normal(n + 1))  # passe-haut
-    return x * np.exp(-t * (18 if open_ else 80)) * 0.35
+def render(mid, wav, sf):
+    run(['fluidsynth', '-ni', '-q', '-g', '0.45', '-r', str(SR), '-o', 'synth.chorus.active=0',
+         '-o', 'synth.reverb.active=1', '-o', 'synth.reverb.room-size=0.35', '-o', 'synth.reverb.level=0.25',
+         '-o', 'synth.reverb.damp=0.6', '-o', 'synth.reverb.width=0.8', '-o', 'synth.polyphony=256',
+         '-F', wav, sf, mid], stdout=subprocess.DEVNULL)
 
 
-def power_chord(root_midi, n, gain=3.0):
-    sig = 0
-    for off in (0, 7, 12):
-        for d in (-0.004, 0.004):
-            sig = sig + saw(hz(root_midi + off), n, d)
-    return np.tanh(gain * sig / 6) * adsr(n, 0.004, 0.03)
+def master_chain(name):
+    """Chaîne ffmpeg commune avant normalisation."""
+    wet = 0.22 if name == 'check_sting' else 0.3
+    return (f'[0:a]highpass=f=32,asplit=2[d][w];[w][1:a]afir=gtype=none:dry=1:wet=1[r];'
+            f'[d][r]amix=inputs=2:weights=1 {wet}:normalize=0,'
+            'equalizer=f=250:t=q:w=1.0:g=-1.5,'       # moins de boue
+            'equalizer=f=3200:t=q:w=1.2:g=-2.5,'      # adoucit les cuivres/hautbois
+            'highshelf=f=9000:g=-3,'                   # aigus feutrés
+            'acompressor=threshold=-22dB:ratio=1.8:attack=40:release=400:knee=6:makeup=1')
 
 
-def brass(chord, n):
-    sig = 0
-    for m in chord:
-        sig = sig + saw(hz(m), n, 0.003) + saw(hz(m), n, -0.003)
-    sig = sig / (2 * len(chord))
-    sig = np.tanh(1.5 * lowpass(sig, 2400))
-    return sig * adsr(n, 0.02, 0.06, decay=2.0)
+def master(raw, ir, out_ogg, name, duration):
+    lufs = LOUDNESS.get(name, -20)
+    chain = master_chain(name)
+    # passe 1 : mesure
+    p = subprocess.run(['ffmpeg', '-hide_banner', '-nostats', '-i', raw, '-i', ir, '-filter_complex',
+                        chain + f',loudnorm=I={lufs}:TP=-2:LRA=14:print_format=json', '-f', 'null', '-'],
+                       capture_output=True, text=True, check=True)
+    js = p.stderr[p.stderr.rfind('{'):p.stderr.rfind('}') + 1]
+    m = json.loads(js)
+    fo = FADE_OUT.get(name, 4.0)
+    fi = 0.02 if name in ('check_sting', 'victory', 'defeat') else 1.5
+    ln = (f"loudnorm=I={lufs}:TP=-2:LRA=14:measured_I={m['input_i']}:measured_TP={m['input_tp']}:"
+          f"measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}:offset={m['target_offset']}:"
+          'linear=true')
+    flt = (chain + ',' + ln + f',aresample={SR},afade=t=in:d={fi},'
+           f'afade=t=out:st={max(0, duration - fo):.2f}:d={fo},alimiter=limit=0.8:level=false')
+    run(['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', raw, '-i', ir, '-filter_complex', flt,
+         '-t', f'{duration:.2f}', '-ar', str(SR), '-ac', '2', '-c:a', 'libvorbis', '-q:a', QUALITY, out_ogg])
 
 
-def bass_note(midi, n):
-    return np.tanh(2 * lowpass(saw(hz(midi), n), 500)) * adsr(n, 0.004, 0.03, decay=3.0)
+def trim_point(raw):
+    """Fin utile : dernier instant au-dessus de -60 dBFS (queue de réverbération incluse)."""
+    x, sr = read_wav(raw)
+    e = np.abs(x).max(axis=1)
+    idx = np.nonzero(e > 10 ** (-54 / 20))[0]
+    return (idx[-1] / sr if len(idx) else len(x) / sr) + 1.0
 
 
-# ------------------------------------------------------------------ morceaux procéduraux
-def fallback(name, spec):
-    rng = np.random.default_rng(sum(map(ord, name)))
-    bpm, style = spec['bpm'], spec['style']
-    beat = 60.0 / bpm
-    bar = 4 * beat
-    bars = max(2, round(spec['seconds'] / bar))
-    total = int(bars * bar * SR)
-    step = int(beat / 2 * SR)           # croche
-    sixteenth = int(beat / 4 * SR)
-    drums = np.zeros((total + SR, 2))
-    guitar = np.zeros_like(drums)
-    low = np.zeros_like(drums)
-    horns = np.zeros_like(drums)
-
-    if style == 'victory':
-        progression = [(60, (60, 64, 67)), (65, (65, 69, 72)), (67, (67, 71, 74)), (72, (72, 76, 79, 84))]
-        progression = (progression * 2)[:bars]
-        progression[-1] = (72, (72, 76, 79, 84))
-    elif style == 'tension':
-        progression = [(57, (57, 60, 63)), (57, (57, 60, 63)), (53, (53, 56, 60)), (56, (56, 59, 62))]
-    elif style == 'heroic':
-        progression = [(57, (57, 60, 64)), (53, (53, 57, 60)), (48, (48, 52, 55)), (55, (55, 59, 62))]
-    else:  # battle
-        progression = [(45, (57, 60, 64)), (41, (53, 57, 60)), (43, (55, 59, 62)), (45, (57, 60, 64))]
-
-    for b in range(bars):
-        root, chord = progression[b % len(progression)]
-        t0 = int(b * bar * SR)
-        gr = root if root >= 40 else root + 12  # guitare >= E2
-        if style == 'victory':
-            add(horns, t0, brass(chord, int(bar * SR * (1.0 if b == bars - 1 else 0.45))), 0.5)
-            add(guitar, t0, power_chord(gr - 12 if gr > 55 else gr, int(bar * SR * 0.9), 4.0), 0.5)
-            for k in range(4):
-                add(drums, t0 + k * int(beat * SR), kick(), 0.9)
-                if k % 2:
-                    add(drums, t0 + k * int(beat * SR), snare(rng), 0.8)
-            for k in range(8):
-                add(drums, t0 + k * step, hat(rng), 0.6)
-            add(drums, t0, hat(rng, True), 1.0)
-            continue
-        for k in range(8):  # croches
-            pos = t0 + k * step
-            if style == 'tension':
-                # basse pulsée, tritons, très peu de batterie
-                note = root - 12 + (6 if (b % 2 and k in (6, 7)) else 0)
-                add(low, pos, bass_note(note, int(step * 0.85)), 0.9)
-                if k % 4 == 0:
-                    add(guitar, pos, power_chord(gr, int(step * 3.8), 5.0), 0.35)
-            elif style == 'heroic':
-                add(low, pos, bass_note(root - 12, int(step * 0.9)), 0.8)
-                if k % 4 == 0:
-                    add(guitar, pos, power_chord(gr, int(step * 3.9), 3.0), 0.45)
-            else:  # battle : palm-mute en croches
-                add(low, pos, bass_note(root - 12 + (0 if k != 7 else 7), int(step * 0.8)), 0.9)
-                add(guitar, pos, power_chord(gr, int(step * 0.7), 6.0), 0.45)
-        if style == 'heroic':
-            add(horns, t0, brass(chord, int(bar * SR * 0.9)), 0.35)
-        if style == 'battle' and b % 2 == 0:
-            add(horns, t0, brass(chord, int(beat * SR * 0.6)), 0.4)
-            add(horns, t0 + int(2.5 * beat * SR), brass(chord, int(beat * SR * 0.5)), 0.4)
-        # batterie
-        for k in range(16):
-            pos = t0 + k * sixteenth
-            if style == 'battle':
-                if k % 4 == 0 or k in (10,):
-                    add(drums, pos, kick(), 0.9)
-                if k % 8 == 4:
-                    add(drums, pos, snare(rng), 0.85)
-                if k % 2 == 0:
-                    add(drums, pos, hat(rng, k % 8 == 6), 0.7)
-            elif style == 'heroic':
-                if k % 8 == 0:
-                    add(drums, pos, kick(), 0.8)
-                if k % 8 == 4:
-                    add(drums, pos, snare(rng), 0.7)
-                if k % 2 == 0:
-                    add(drums, pos, hat(rng), 0.5)
-            else:  # tension
-                if k in (0, 6):
-                    add(drums, pos, kick(), 0.8)
-                if k == 12:
-                    add(drums, pos, snare(rng), 0.6)
-
-    guitar = np.tanh(lowpass_stereo(guitar, 4500) * 1.2)
-    mix = drums * 0.9 + guitar * 0.8 + low * 0.9 + horns * 0.7
-    mix = mix[:total] if spec['loop'] else mix[:total + SR // 2]
-    mix = mix + 0.12 * delay(mix, int(beat * 0.75 * SR))  # ambiance
-    if not spec['loop']:
-        n = len(mix)
-        mix *= np.concatenate([np.ones(n - SR), np.linspace(1, 0, SR)])[:, None]
-    return mix
-
-
-def lowpass_stereo(x, cutoff):
-    return np.stack([lowpass(x[:, 0], cutoff), lowpass(x[:, 1], cutoff)], axis=1)
-
-
-def delay(x, n):
-    y = np.zeros_like(x)
-    y[n:] = x[:-n]
-    return y
-
-
-# ------------------------------------------------------------------ boucle propre
-def make_loop(x, xfade_s=1.5):
-    """Fondu croisé de la fin vers le début : la sortie boucle sans clic."""
-    n = int(xfade_s * SR)
-    if len(x) <= 3 * n:
-        return x
-    body, tail, head = x[:-n], x[-n:], x[:n]
-    out = body.copy()
-    w = np.linspace(0, 1, n)[:, None]
-    out[:n] = head * np.sqrt(w) + tail * np.sqrt(1 - w)  # puissance constante
-    return out
-
-
-# ------------------------------------------------------------------ MusicGen
-def musicgen_worker(prompt, seconds, out_npy):
-    import torch
-    from transformers import AutoProcessor, MusicgenForConditionalGeneration
-    torch.manual_seed(42)
-    proc = AutoProcessor.from_pretrained('facebook/musicgen-small')
-    model = MusicgenForConditionalGeneration.from_pretrained('facebook/musicgen-small')
-    inputs = proc(text=[prompt], padding=True, return_tensors='pt')
-    audio = model.generate(**inputs, do_sample=True, guidance_scale=3.0,
-                           max_new_tokens=int(seconds * 50) + 20)
-    sr = model.config.audio_encoder.sampling_rate
-    x = audio[0].float().numpy()            # (canaux, n)
-    np.save(out_npy, np.concatenate([[sr], x.reshape(-1)]).astype(np.float32))
-    np.save(out_npy + '.shape.npy', np.array(x.shape))
-
-
-def run_musicgen(spec, tmp):
-    out = os.path.join(tmp, 'mg.npy')
-    r = subprocess.run([sys.executable, '-I', os.path.abspath(__file__), '--worker',
-                        spec['prompt'], str(spec['seconds']), out], timeout=TIMEOUT)
-    if r.returncode != 0:
-        raise RuntimeError('musicgen a échoué')
-    data = np.load(out)
-    shape = np.load(out + '.shape.npy')
-    sr, x = int(data[0]), data[1:].reshape(tuple(shape))
-    if sr != SR:  # ré-échantillonnage linéaire simple
-        idx = np.arange(int(x.shape[1] * SR / sr)) * sr / SR
-        x = np.stack([np.interp(idx, np.arange(x.shape[1]), c) for c in x])
-    x = x.T if x.shape[0] <= 2 else x
-    if x.shape[1] == 1:
-        x = np.repeat(x, 2, axis=1)
-    return x[:, :2].astype(np.float64)
-
-
-# ------------------------------------------------------------------ export
-def encode(x, path):
-    x = x / (np.max(np.abs(x)) + 1e-9) * 0.9
-    pcm = (x * 32767).astype('<i2')
+def analyse(ogg):
+    """Durée, crête, sonie, centroïde spectral (contrôle « pas trop brillant »)."""
     with tempfile.TemporaryDirectory() as tmp:
         wav = os.path.join(tmp, 'a.wav')
-        with wave.open(wav, 'wb') as w:
-            w.setnchannels(2)
-            w.setsampwidth(2)
-            w.setframerate(SR)
-            w.writeframes(pcm.tobytes())
-        subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', wav, '-af',
-                        'loudnorm=I=-18:TP=-1.5:LRA=11', '-ar', '44100', '-ac', '2',
-                        '-c:a', 'libvorbis', '-b:a', '96k', path], check=True)
+        run(['ffmpeg', '-y', '-loglevel', 'error', '-i', ogg, '-ar', str(SR), wav])
+        x, sr = read_wav(wav)
+        p = subprocess.run(['ffmpeg', '-hide_banner', '-nostats', '-i', wav, '-af',
+                            'loudnorm=print_format=json', '-f', 'null', '-'], capture_output=True, text=True)
+        js = json.loads(p.stderr[p.stderr.rfind('{'):p.stderr.rfind('}') + 1])
+    mono = x.mean(axis=1)
+    seg = 1 << 15
+    cents, hi = [], []
+    for i in range(0, len(mono) - seg, seg):
+        s = np.abs(np.fft.rfft(mono[i:i + seg] * np.hanning(seg)))
+        f = np.fft.rfftfreq(seg, 1 / sr)
+        if s.sum() > 1e-3:
+            cents.append(float((f * s).sum() / s.sum()))
+            hi.append(float((s[f > 5000] ** 2).sum() / (s ** 2).sum()))
+    return dict(duree=round(len(x) / sr, 1), crete_dbfs=round(20 * np.log10(np.abs(x).max() + 1e-9), 1),
+                lufs=float(js['input_i']), centroide_hz=round(float(np.median(cents)) if cents else 0),
+                energie_5k=round(float(np.mean(hi)) if hi else 0, 4),
+                ko=round(os.path.getsize(ogg) / 1024))
 
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    only_fallback = '--fallback-only' in sys.argv
+    only = None
+    for i, a in enumerate(sys.argv):
+        if a == '--only' and i + 1 < len(sys.argv):
+            only = set(sys.argv[i + 1].split(','))
+            args = [x for x in args if x != sys.argv[i + 1]]
+    midi_only = '--midi-only' in sys.argv
     out = args[0] if args else os.path.join(ROOT, 'app', 'assets', 'audio', 'music')
+    mid_dir = os.path.join(HERE, 'out')
     os.makedirs(out, exist_ok=True)
-    for name, spec in TRACKS.items():
-        x, source = None, 'musicgen'
-        if not only_fallback:
-            try:
-                with tempfile.TemporaryDirectory() as tmp:
-                    x = run_musicgen(spec, tmp)
-            except Exception as e:
-                print('MusicGen indisponible pour', name, '->', repr(e), file=sys.stderr)
-        if x is None:
-            source = 'repli procédural'
-            x = fallback(name, spec)
-        if spec['loop']:
-            x = make_loop(x)
-        encode(x, os.path.join(out, name + '.ogg'))
-        print('musique', name, source, f'{len(x) / SR:.1f}s', flush=True)
+    os.makedirs(mid_dir, exist_ok=True)
+    songs = scores.all_songs()
+    built = {}
+    for name, fn in songs.items():
+        if only and name not in only:
+            continue
+        s = fn()
+        path = os.path.join(mid_dir, name + '.mid')
+        s.write(path)
+        built[name] = (s, path)
+        print(f'MIDI {name}: {len(s.notes)} notes, {s.end / s.meter:.0f} mesures, sections '
+              + ' '.join(f'{txt}@{t / s.meter:.0f}' for t, txt in s.markers), flush=True)
+    for w in scores.WARN:
+        print('frottement:', w, file=sys.stderr)
+    if midi_only:
+        return
+    sf = soundfont()
+    report = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        ir = os.path.join(tmp, 'ir.wav')
+        make_ir(ir)
+        for name, (s, mid) in built.items():
+            raw = os.path.join(tmp, name + '.wav')
+            render(mid, raw, sf)
+            dur = min(trim_point(raw), MAX_LEN.get(name, 1e9))
+            ogg = os.path.join(out, name + '.ogg')
+            master(raw, ir, ogg, name, dur)
+            report[name] = analyse(ogg)
+            print('musique', name, report[name], flush=True)
+    total = sum(os.path.getsize(os.path.join(out, f)) for f in os.listdir(out) if f.endswith('.ogg'))
+    print(f'total musique : {total / 1e6:.2f} Mo', flush=True)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == '--worker':
-        musicgen_worker(sys.argv[2], float(sys.argv[3]), sys.argv[4])
-    else:
-        main()
+    main()
