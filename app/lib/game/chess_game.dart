@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flame/components.dart';
 import 'package:flame/game.dart';
 import 'package:flutter/foundation.dart' show ValueNotifier;
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter/painting.dart' show Color, Offset, Rect, Size;
 
 import '../models/geometry.dart';
@@ -117,8 +118,22 @@ class ChessGame extends FlameGame with FxHost implements BoardHost, CullHost, Wa
   final WarriorAtlas atlas = WarriorAtlas();
   late final WarriorBatchLayer batchLayer = WarriorBatchLayer(this);
 
+  /// Atlas utilisé : toujours pendant un geste ; à l'arrêt seulement s'il est assez net
+  /// (zoom fort : les quelques guerriers visibles sont dessinés en vectoriel).
   @override
-  WarriorAtlasData? get warriorAtlas => PerfConfig.spriteCache ? atlas.ready : null;
+  WarriorAtlasData? get warriorAtlas =>
+      PerfConfig.spriteCache && (cameraMoving || atlasSharpFor(_needPpu)) ? atlas.ready : null;
+  double _needPpu = 0;
+
+  /// Application en arrière-plan : les atlas sont libérés (reconstruits au retour).
+  @override
+  void lifecycleStateChange(AppLifecycleState state) {
+    super.lifecycleStateChange(state);
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      atlas.release();
+    }
+  }
 
   late final ArenaBackdrop backdrop = ArenaBackdrop();
 
@@ -439,8 +454,8 @@ class ChessGame extends FlameGame with FxHost implements BoardHost, CullHost, Wa
     final moving = cameraMoving;
     backdrop.lite = PerfConfig.gestureLite && moving;
     if (PerfConfig.spriteCache && _laidOut) {
-      atlas.update(
-          needPpu: _maxArtPx * boardCamera.zoom * deviceRatio(), outlinePx: _maxArtPx, moving: moving);
+      _needPpu = _maxArtPx * boardCamera.zoom * deviceRatio();
+      atlas.update(needPpu: _needPpu, outlinePx: _maxArtPx, moving: moving);
     }
     batchLayer.pieces.clear();
     for (final p in _pieces.values) {

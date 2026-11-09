@@ -20,9 +20,11 @@ class AtlasTier {
   final int frames;
 }
 
-/// Trois paliers selon le zoom (vue entière, zoom moyen, zoom fort). Au-delà du dernier, les
-/// sprites sont légèrement agrandis.
-const atlasTiers = [AtlasTier(32, 12), AtlasTier(56, 12), AtlasTier(88, 6)];
+/// Deux paliers selon le zoom (vue entière, zoom léger), 8 images IDLE chacun, dimensionnés
+/// pour tenir dans une texture 2048 px de 8 Mo au plus. Au-delà du dernier palier, l'atlas
+/// sert (agrandi) pendant les gestes ; à l'arrêt, les quelques guerriers visibles d'un zoom
+/// fort sont dessinés en vectoriel net.
+const atlasTiers = [AtlasTier(24, 8), AtlasTier(36, 8)];
 
 /// Palier adapté à une densité voulue (pixels physiques par unité d'art).
 int atlasTierFor(double needPpu) {
@@ -32,21 +34,25 @@ int atlasTierFor(double needPpu) {
   return atlasTiers.length - 1;
 }
 
-/// Taille maximale d'une page d'atlas (une seule texture : un seul appel drawAtlas).
-const atlasMaxTexture = 4096;
+/// L'atlas est-il assez net pour la densité voulue (sinon : vectoriel à l'arrêt) ?
+bool atlasSharpFor(double needPpu) => needPpu <= atlasTiers.last.ppu * 1.3;
+
+/// Plafonds d'un atlas : une page de 2048 × 2048 px au plus, 8 Mo (RGBA) au plus.
+const atlasMaxTexture = 2048;
+const atlasMaxBytes = 8 * 1024 * 1024;
 
 /// Emprise (unités d'art, pieds en 0,0, face +x) des guerriers au repos ou pétrifiés,
-/// mesurée sur le rendu et élargie d'une marge.
+/// mesurée sur le rendu, marge minimale de 0,08 unité.
 const _typeBounds = <PieceType, List<double>>{
-  PieceType.king: [-1.05, -3.2, 1.35, 0.25],
-  PieceType.queen: [-1.6, -2.95, 1.05, 0.25],
-  PieceType.rook: [-1.2, -2.95, 1.6, 0.25],
-  PieceType.bishop: [-1.55, -3.45, 1.1, 0.25],
-  PieceType.knight: [-1.7, -3.1, 1.1, 0.25],
-  PieceType.pawn: [-1.2, -2.8, 1.05, 0.25],
+  PieceType.king: [-1.0, -3.1, 1.28, 0.18],
+  PieceType.queen: [-1.53, -2.86, 0.98, 0.18],
+  PieceType.rook: [-1.1, -2.86, 1.5, 0.16],
+  PieceType.bishop: [-1.48, -3.38, 1.03, 0.18],
+  PieceType.knight: [-1.6, -3.03, 1.0, 0.18],
+  PieceType.pawn: [-1.13, -2.7, 0.98, 0.18],
 };
-const _socleBounds = [-1.6, -0.65, 1.6, 0.8];
-const _shadowBounds = [-2.7, -1.0, 2.7, 1.3];
+const _socleBounds = [-1.5, -0.58, 1.5, 0.72];
+const _shadowBounds = [-2.5, -1.1, 2.5, 1.4];
 
 /// Rayon d'un pion en unités d'art (une unité = 0,72 rayon).
 const double _r = 1 / 0.72;
@@ -150,32 +156,34 @@ class _AtlasBuild {
     }
     set(18 * frames + 10, _shadowBounds);
 
-    // Rangées (« shelf packing ») ; 2 px de marge contre le débordement du filtrage.
-    for (final maxW in const [2048, atlasMaxTexture]) {
-      var x = 0.0, y = 0.0, row = 0.0, w = 0.0;
-      for (var i = 0; i < n; i++) {
-        final cw = sizes[i * 2] + 2, ch = sizes[i * 2 + 1] + 2;
-        if (x + cw > maxW) {
-          x = 0;
-          y += row;
-          row = 0;
-        }
-        cells[i * 6] = x + 1;
-        cells[i * 6 + 1] = y + 1;
-        cells[i * 6 + 2] = x + 1 + sizes[i * 2];
-        cells[i * 6 + 3] = y + 1 + sizes[i * 2 + 1];
-        cells[i * 6 + 4] = anchors[i * 2];
-        cells[i * 6 + 5] = anchors[i * 2 + 1];
-        x += cw;
-        row = math.max(row, ch);
-        w = math.max(w, x);
+    // Rangées (« shelf packing ») dans une page de 2048 px ; 2 px de marge contre le
+    // débordement du filtrage.
+    const maxW = atlasMaxTexture;
+    var x = 0.0, y = 0.0, row = 0.0, w = 0.0;
+    for (var i = 0; i < n; i++) {
+      final cw = sizes[i * 2] + 2, ch = sizes[i * 2 + 1] + 2;
+      if (x + cw > maxW) {
+        x = 0;
+        y += row;
+        row = 0;
       }
-      width = w.ceil();
-      height = (y + row).ceil();
-      if (height <= maxW) break;
+      cells[i * 6] = x + 1;
+      cells[i * 6 + 1] = y + 1;
+      cells[i * 6 + 2] = x + 1 + sizes[i * 2];
+      cells[i * 6 + 3] = y + 1 + sizes[i * 2 + 1];
+      cells[i * 6 + 4] = anchors[i * 2];
+      cells[i * 6 + 5] = anchors[i * 2 + 1];
+      x += cw;
+      row = math.max(row, ch);
+      w = math.max(w, x);
     }
-    if (width > atlasMaxTexture || height > atlasMaxTexture) failed = true;
+    width = w.ceil();
+    height = (y + row).ceil();
+    if (width > atlasMaxTexture || height > atlasMaxTexture || bytes > atlasMaxBytes) failed = true;
   }
+
+  /// Mémoire estimée de la texture (RGBA 8 bits).
+  int get bytes => width * height * 4;
 
   /// Exécute des étapes jusqu'à épuisement du budget ; lance la rastérisation à la fin.
   void step(int budgetMicros) {
@@ -333,6 +341,15 @@ class WarriorAtlas {
       builds++;
     }
   }
+
+  /// Dimensions et octets estimés de l'atlas d'un palier (sans le construire).
+  static ({int width, int height, int bytes}) planFor(int tier) {
+    final b = _AtlasBuild(tier, 14);
+    return (width: b.width, height: b.height, bytes: b.bytes);
+  }
+
+  /// Libère tout (application en arrière-plan) ; reconstruit à la demande au retour.
+  void release() => dispose();
 
   /// Termine l'enregistrement de la construction en cours (tests : la rastérisation reste
   /// asynchrone).

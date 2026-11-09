@@ -24,7 +24,7 @@ void _frame(ChessGame game) {
 Future<ChessGame> _game(WidgetTester tester, BoardGeometry geo) async {
   final game = ChessGame(geometry: geo, viewer: 0);
   await tester.pumpWidget(MaterialApp(
-      home: SizedBox(width: 420, height: 640, child: GameWidget(game: game, key: UniqueKey()))));
+      home: Center(child: SizedBox(width: 420, height: 640, child: GameWidget(game: game, key: UniqueKey())))));
   await tester.pump();
   game.applyGame(initialMsg(), 0);
   await tester.pump();
@@ -101,6 +101,18 @@ void main() {
   });
 
   group('atlas de sprites', () {
+    test('plafonds : 2048 px, 8 Mo par palier, 8 images IDLE', () {
+      for (var t = 0; t < atlasTiers.length; t++) {
+        final p = WarriorAtlas.planFor(t);
+        expect(p.width, lessThanOrEqualTo(2048), reason: 'palier $t');
+        expect(p.height, lessThanOrEqualTo(2048), reason: 'palier $t');
+        expect(p.bytes, lessThanOrEqualTo(8 * 1024 * 1024), reason: 'palier $t');
+        expect(atlasTiers[t].frames, 8);
+        // ignore: avoid_print
+        print('palier $t : ${p.width}×${p.height} px, ${(p.bytes / 1048576).toStringAsFixed(1)} Mo');
+      }
+    });
+
     testWidgets('construction répartie sur plusieurs images, puis changement de palier sans trou',
         (tester) async {
       await tester.runAsync(() async {
@@ -130,15 +142,15 @@ void main() {
         expect(opaque, greaterThan(100));
 
         // Pendant un geste : pas de nouveau palier.
-        atlas.update(needPpu: 60, outlinePx: 14, moving: true);
+        atlas.update(needPpu: 40, outlinePx: 14, moving: true);
         expect(atlas.building, isFalse);
         // À l'arrêt : palier supérieur construit en arrière-plan, l'ancien reste affiché.
-        atlas.update(needPpu: 60, outlinePx: 14, moving: false);
+        atlas.update(needPpu: 40, outlinePx: 14, moving: false);
         expect(atlas.buildingTier, 1);
         expect(atlas.ready, same(a0));
         steps = 0;
         while (atlas.ready == a0 && steps < 2000) {
-          atlas.update(needPpu: 60, outlinePx: 14, moving: false);
+          atlas.update(needPpu: 40, outlinePx: 14, moving: false);
           expect(atlas.ready, isNotNull);
           steps++;
           await Future<void>.delayed(const Duration(milliseconds: 1));
@@ -151,6 +163,8 @@ void main() {
     });
 
     testWidgets('en jeu : guerriers au repos en un lot, pièce sélectionnée en vectoriel', (tester) async {
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
       final game = await _game(tester, geo);
       await tester.runAsync(() async {
         for (var i = 0; i < 2000 && game.atlas.ready == null; i++) {
@@ -177,6 +191,12 @@ void main() {
       _frame(game);
       expect(p.renderCount, r0 + 1);
       expect(game.batchLayer.drawn, 47);
+      p.setSelected(false);
+
+      // Application en arrière-plan : atlas libéré.
+      game.lifecycleStateChange(AppLifecycleState.paused);
+      expect(game.atlas.ready, isNull);
+      expect(game.atlas.building, isFalse);
     });
   });
 
