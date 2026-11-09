@@ -69,14 +69,16 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
-      - name: Télécharger Gradle (avec nouvelles tentatives)
-        working-directory: app/android
-        run: |
-          for i in 1 2 3 4 5; do ./gradlew --version && exit 0; echo "Échec $i, nouvel essai..."; sleep $((i*15)); done
-          exit 1
-
       - name: Build APK
-        run: flutter build apk --release --dart-define=SERVER_URL=${{ vars.SERVER_URL || 'https://chess-trio-warriors.geoffroyd.workers.dev' }}
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL || 'https://chess-trio-warriors.geoffroyd.workers.dev' }}
+        run: |
+          # Nouvelles tentatives : le téléchargement de Gradle échoue parfois (HTTP 504).
+          for i in 1 2 3 4; do
+            flutter build apk --release --dart-define=SERVER_URL="$SERVER_URL" && exit 0
+            echo "Échec $i, nouvel essai..."; sleep $((i*20))
+          done
+          exit 1
 
       - name: Renommer l'APK
         run: cp build/app/outputs/flutter-apk/app-release.apk chess-trio-warriors.apk
