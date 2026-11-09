@@ -434,3 +434,12 @@ test('2 humains + 1 bot : le bot joue à son tour, le minuteur reste celui des h
   assert.equal(h.stored!.botMoveAt, null);
   assert.equal(h.alarm, h.stored!.turnDeadline);
 });
+
+test('BOT_CPU_MS : lecture de la variable d\'env', async () => {
+  const { parseBotCpuMs } = await import('../src/room-logic.ts');
+  assert.equal(parseBotCpuMs('8'), 8);
+  assert.equal(parseBotCpuMs('2.5'), 2.5);
+  assert.equal(parseBotCpuMs(undefined), undefined);
+  assert.equal(parseBotCpuMs('abc'), undefined);
+  assert.equal(parseBotCpuMs('0'), undefined);
+});

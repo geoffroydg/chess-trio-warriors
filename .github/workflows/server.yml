@@ -32,6 +32,8 @@ jobs:
     needs: test
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ccr-b4a21867-um8mut')
     runs-on: ubuntu-latest
+    outputs:
+      deployed: ${{ steps.check.outputs.enabled }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -69,3 +71,18 @@ jobs:
         if: steps.check.outputs.enabled == 'true' && env.FCM_SERVICE_ACCOUNT != ''
         working-directory: server
         run: printf '%s' "$FCM_SERVICE_ACCOUNT" | npx wrangler secret put FCM_SERVICE_ACCOUNT
+
+  smoke:
+    needs: deploy
+    if: needs.deploy.outputs.deployed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Smoke test du worker déployé (partie solo contre 2 bots difficiles)
+        working-directory: server
+        run: |
+          sleep 10
+          node scripts/smoke.mjs https://chess-trio-warriors.geoffroyd.workers.dev

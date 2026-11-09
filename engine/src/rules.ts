@@ -43,6 +43,9 @@ const PLAYERS: readonly Player[] = [0, 1, 2];
 const BACK_RANK: readonly PieceType[] = ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R'];
 const ORTHO_DIRS = [0, 1, 2, 3];
 const DIAG_DIRS = [4, 5, 6, 7];
+const ALL_DIRS = [0, 1, 2, 3, 4, 5, 6, 7];
+const SEEN = new Int32Array(NUM_CELLS);
+let seenStamp = 0;
 
 // Pièces partagées (immuables) pour limiter les allocations.
 const PIECES: Record<string, Piece> = {};
@@ -176,13 +179,15 @@ export function pseudoMoves(board: Board, active: Active, player: Player): IMove
         for (const t of KING_ADJ[c]) add(c, t);
         break;
       default: {
-        const dirs = pc.type === 'R' ? ORTHO_DIRS : pc.type === 'B' ? DIAG_DIRS : [...ORTHO_DIRS, ...DIAG_DIRS];
-        const seen = new Set<number>();
+        const dirs = pc.type === 'R' ? ORTHO_DIRS : pc.type === 'B' ? DIAG_DIRS : ALL_DIRS;
+        // Marquage par tampon (sans allocation) : les chemins dédoublés partagent leur début.
+        if (seenStamp > 2e9) (SEEN.fill(0), (seenStamp = 0));
+        const stamp = ++seenStamp;
         for (const d of dirs) {
           for (const path of RAYS[c][d]) {
             for (const t of path) {
-              if (!seen.has(t)) {
-                seen.add(t);
+              if (SEEN[t] !== stamp) {
+                SEEN[t] = stamp;
                 add(c, t);
               }
               if (board[t] !== null) break;
@@ -235,14 +240,42 @@ function playOnBoard(board: Board, m: IMove, player: Player): Board {
   return b;
 }
 
+// KING_RAY_MASK[c][x] = 1 si x est sur un rayon (tour ou fou) partant de c.
+const KING_RAY_MASK: Uint8Array[] = [];
+function kingRayMask(c: number): Uint8Array {
+  let m = KING_RAY_MASK[c];
+  if (!m) {
+    m = new Uint8Array(NUM_CELLS);
+    for (const paths of RAYS[c]) for (const path of paths) for (const x of path) m[x] = 1;
+    KING_RAY_MASK[c] = m;
+  }
+  return m;
+}
+
 function legalFor(board: Board, active: Active, player: Player, rights: CastlingRights): IMove[] {
   if (!active[player]) return [];
   const out: IMove[] = [];
   const kingCell = findKing(board, player);
+  // Jouer / déjouer sur une seule copie de travail (chemin chaud : pas d'allocation par coup).
+  // La promotion ne change rien au test : la case d'arrivée est occupée dans tous les cas.
+  const b = board.slice();
+  // Roi hors échec : un coup d'une autre pièce ne peut exposer le roi qu'en ouvrant une ligne,
+  // donc seulement si la pièce part d'une case située sur un rayon du roi.
+  const inCheck = kingCell >= 0 && isAttackedByAny(board, active, kingCell, player);
+  const onKingRay = kingCell >= 0 && !inCheck ? kingRayMask(kingCell) : null;
   for (const m of pseudoMoves(board, active, player)) {
-    const b = playOnBoard(board, m, player);
+    if (onKingRay !== null && m.from !== kingCell && onKingRay[m.from] === 0) {
+      out.push(m);
+      continue;
+    }
+    const moved = b[m.from];
+    const taken = b[m.to];
+    b[m.from] = null;
+    b[m.to] = moved;
     const k = m.from === kingCell ? m.to : kingCell;
     if (k < 0 || !isAttackedByAny(b, active, k, player)) out.push(m);
+    b[m.from] = moved;
+    b[m.to] = taken;
   }
   for (const m of castlingMoves(board, active, player, rights)) out.push(m);
   return out;

@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { FcmClient } from './fcm.ts';
-import { RoomLogic } from './room-logic.ts';
+import { RoomLogic, parseBotCpuMs } from './room-logic.ts';
 import type { RoomData } from './room-logic.ts';
 import type { Env } from './index.ts';
 
@@ -40,6 +40,7 @@ export class Room extends DurableObject<Env> {
         }
       },
       notify: (msgs) => ctx.waitUntil(this.fcm.send(msgs)),
+      botCpuMs: parseBotCpuMs(env.BOT_CPU_MS),
     });
   }
 

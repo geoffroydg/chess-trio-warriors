@@ -10,7 +10,8 @@ import {
   isCellAttacked,
   legalMoves,
   randomMove,
-  DEFAULT_MAX_NODES,
+  DEFAULT_BOT_CPU_MS,
+  NODES_PER_MS,
 } from '../src/index.ts';
 import type { BotLevel, GameState, Move, Player } from '../src/index.ts';
 import { rngFrom } from './helpers.ts';
@@ -43,8 +44,8 @@ test('déterministe avec un rng injecté', () => {
   const r = rngFrom(5);
   for (let i = 0; i < 12; i++) s = applyMove(s, randomMove(s, r));
   for (const level of LEVELS) {
-    const a = botDecision(s, level, { rng: rngFrom(7), maxNodes: 600 });
-    const b = botDecision(s, level, { rng: rngFrom(7), maxNodes: 600 });
+    const a = botDecision(s, level, { rng: rngFrom(7), now: () => 0 });
+    const b = botDecision(s, level, { rng: rngFrom(7), now: () => 0 });
     assert.deepEqual(a, b, level);
   }
 });
@@ -72,7 +73,7 @@ test('moyen et difficile privilégient le mat', () => {
   assert.ok(positions.length >= 3);
   for (const s of positions) {
     for (const level of ['moyen', 'difficile'] as BotLevel[]) {
-      const m = botMove(s, level, { rng: rngFrom(1) });
+      const m = botMove(s, level, { rng: rngFrom(1), now: () => 0 });
       assert.equal(applyMove(s, m).result?.winner, s.turn, `${level} doit mater`);
     }
   }
@@ -112,27 +113,36 @@ test('moyen ne laisse pas sa dame en prise', () => {
   }
 });
 
-test('budget de nœuds respecté (et temps raisonnable)', () => {
+test('budget de temps respecté, repli sur un coup légal, garde-fou si l\'horloge est figée', () => {
   const rng = rngFrom(3);
   let s = initialState('firstMate');
-  let total = 0;
-  let n = 0;
+  let worst = 0;
   for (let i = 0; i < 30 && !s.result; i++) {
-    if (i % 5 === 2) {
-      const t = performance.now();
-      const d = botDecision(s, 'difficile', { rng });
-      total += performance.now() - t;
-      n++;
-      assert.ok(d.nodes <= DEFAULT_MAX_NODES, `nœuds : ${d.nodes}`);
-      assert.ok(d.depth >= 1 && d.depth <= 3);
-      const small = botDecision(s, 'difficile', { rng, maxNodes: 200 });
-      assert.ok(small.nodes <= 200);
-      assert.ok(isLegal(s, small.move));
+    if (i % 3 === 1) {
+      for (const level of LEVELS) {
+        const t = performance.now();
+        const d = botDecision(s, level, { rng });
+        const dt = performance.now() - t;
+        worst = Math.max(worst, dt);
+        assert.ok(isLegal(s, d.move));
+      }
+      // Horloge figée (cas d'un Worker) : le plafond de nœuds borne la recherche.
+      const frozen = botDecision(s, 'difficile', { rng, now: () => 0 });
+      assert.ok(frozen.nodes <= DEFAULT_BOT_CPU_MS * NODES_PER_MS, `nœuds : ${frozen.nodes}`);
+      // Budget nul ou déjà dépassé : repli immédiat, toujours légal.
+      let tick = 0;
+      for (const level of LEVELS) {
+        const d = botDecision(s, level, { rng, now: () => (tick += 100) });
+        assert.ok(isLegal(s, d.move), level);
+        assert.ok(d.nodes <= 1);
+      }
     }
     s = applyMove(s, randomMove(s, rng));
   }
-  // ~200 ms en moyenne sur une machine ordinaire ; marge pour les CI lentes.
-  assert.ok(total / n < 600, `temps moyen ${Math.round(total / n)} ms`);
+  // Budget de 8 ms (+ dépassement d'au plus un nœud et marge pour les machines lentes).
+  assert.ok(worst < DEFAULT_BOT_CPU_MS + 25, `pire temps ${worst.toFixed(1)} ms`);
+  const custom = botDecision(initialState('twoMates'), 'difficile', { rng, timeBudgetMs: 3, now: () => 0 });
+  assert.ok(custom.nodes <= 3 * NODES_PER_MS);
 });
 
 test('2 bots difficiles contre 1 facile : le facile gagne rarement', () => {
@@ -144,9 +154,10 @@ test('2 bots difficiles contre 1 facile : le facile gagne rarement', () => {
     const rng = rngFrom(100 + g);
     const weak = (g % 3) as Player;
     let s = initialState(g % 2 ? 'twoMates' : 'firstMate');
-    // Parties courtes (90 demi-coups) ; budget réduit pour la durée du test.
+    // Parties courtes (90 demi-coups), budget par défaut (8 ms) avec horloge figée comme dans
+    // un Worker : seul le plafond de nœuds joue, ce qui rend le test déterministe.
     while (!s.result && s.ply < 90) {
-      s = applyMove(s, botMove(s, s.turn === weak ? 'facile' : 'difficile', { rng, maxNodes: 300 }));
+      s = applyMove(s, botMove(s, s.turn === weak ? 'facile' : 'difficile', { rng, now: () => 0 }));
     }
     let winner: Player | null = s.result ? s.result.winner : null;
     if (!s.result) {

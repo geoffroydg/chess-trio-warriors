@@ -12,8 +12,8 @@ export {
   nextPlayer,
 } from './rules.ts';
 export type { CustomPiece, CustomOptions } from './rules.ts';
-export { botMove, botDecision, isBotLevel, BOT_LEVELS, DEFAULT_MAX_NODES } from './bot.ts';
-export type { BotLevel, BotOptions, BotDecision } from './bot.ts';
+export { botMove, botDecision, isBotLevel, BOT_LEVELS, DEFAULT_BOT_CPU_MS, LEVEL_PROFILES, NODES_PER_MS } from './bot.ts';
+export type { BotLevel, BotOptions, BotDecision, LevelProfile } from './bot.ts';
 export { boardCells, boardOutline } from './geometry.ts';
 export type { CellGeometry, Point } from './geometry.ts';
 export { cellName, parseCell, NUM_CELLS, FILES } from './topology.ts';

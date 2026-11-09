@@ -1,6 +1,10 @@
-// Joueurs artificiels (bots). Purs et déterministes : le hasard passe par un rng injectable
-// et la recherche est bornée par un budget de nœuds (nombre de positions générées), seul
-// budget fiable dans un Worker Cloudflare (l'horloge n'y avance pas pendant le calcul).
+// Joueurs artificiels (bots). Purs et déterministes : le hasard passe par un rng injectable.
+// Chaque niveau a un budget de TEMPS CPU (8 ms par défaut, pour tenir dans la limite de ~10 ms
+// par invocation de l'offre Workers gratuite) et une profondeur maximale. Le temps est mesuré
+// avec une horloge injectable (performance.now par défaut) ; comme l'horloge d'un Worker peut
+// rester figée pendant un calcul synchrone, un plafond de nœuds proportionnel au budget sert de
+// garde-fou. Dans tous les cas un coup légal est rendu (repli : difficile → meilleur coup connu,
+// moyen → facile).
 import { applyInternal, attacks, findKing, legalInternal, toPublic } from './rules.ts';
 import type { IMove } from './rules.ts';
 import { KING_ADJ, KNIGHT_ADJ, NUM_CELLS, PAWN_ATTACKERS, RAYS, rankOf, sectorOf } from './topology.ts';
@@ -12,11 +16,38 @@ export const BOT_LEVELS: readonly BotLevel[] = ['facile', 'moyen', 'difficile'];
 export interface BotOptions {
   /** Réel dans [0, 1). Par défaut Math.random. */
   rng?: () => number;
-  /** Budget de nœuds (positions générées) pour le niveau difficile. */
-  maxNodes?: number;
-  /** Profondeur maximale (niveau difficile, 3 par défaut). */
+  /** Budget de temps CPU (ms). Par défaut celui du profil du niveau. */
+  timeBudgetMs?: number;
+  /** Horloge en ms (par défaut performance.now, sinon Date.now). */
+  now?: () => number;
+  /** Profondeur maximale (par défaut celle du profil). */
   maxDepth?: number;
+  /** Plafond de nœuds explicite (tests) ; par défaut proportionnel au budget de temps. */
+  maxNodes?: number;
 }
+
+export interface LevelProfile {
+  /** Budget de temps CPU par coup (ms). */
+  budgetMs: number;
+  /** Profondeur de recherche maximale (demi-coups). */
+  maxDepth: number;
+}
+
+/** Budget CPU par défaut d'un coup de bot (ms) ; le serveur le règle via BOT_CPU_MS. */
+export const DEFAULT_BOT_CPU_MS = 8;
+
+/** Profils des niveaux : budget de temps (plafonné au budget CPU global) + profondeur max. */
+export const LEVEL_PROFILES: Record<BotLevel, LevelProfile> = {
+  facile: { budgetMs: 2, maxDepth: 1 },
+  moyen: { budgetMs: DEFAULT_BOT_CPU_MS, maxDepth: 1 },
+  difficile: { budgetMs: DEFAULT_BOT_CPU_MS, maxDepth: 3 },
+};
+
+/**
+ * Garde-fou si l'horloge ne bouge pas : nœuds autorisés par ms de budget
+ * (~25 µs par nœud génération + évaluation comprises, marge incluse).
+ */
+export const NODES_PER_MS = 30;
 
 export interface BotDecision {
   move: Move;
@@ -26,10 +57,34 @@ export interface BotDecision {
   depth: number;
   /** Évaluation du coup choisi, du point de vue du bot (centipions). */
   score: number;
+  /** Vrai si le budget a été atteint (recherche écourtée ou repli). */
+  cutoff?: boolean;
 }
 
-/** Budget par défaut du niveau difficile : ~50 µs par nœud (génération + évaluation) → ~200 ms, sous 300 ms CPU. */
-export const DEFAULT_MAX_NODES = 4000;
+const defaultClock: () => number =
+  typeof performance !== 'undefined' && typeof performance.now === 'function' ? () => performance.now() : () => Date.now();
+
+/** Budget d'un coup : temps écoulé et nombre de nœuds. */
+class Budget {
+  nodes = 0;
+  private start: number;
+  private now: () => number;
+  private ms: number;
+  private maxNodes: number;
+  constructor(ms: number, maxNodes: number, now: () => number) {
+    this.now = now;
+    this.ms = ms;
+    this.maxNodes = maxNodes;
+    this.start = now();
+  }
+  /** Vrai si le budget est épuisé (vérifié avant chaque nouvelle position). */
+  get exhausted(): boolean {
+    return this.nodes >= this.maxNodes || this.now() - this.start >= this.ms;
+  }
+  get elapsed(): number {
+    return this.now() - this.start;
+  }
+}
 
 const VAL: Record<PieceType, number> = { P: 100, N: 300, B: 320, R: 500, Q: 900, K: 0 };
 const WIN = 1_000_000;
@@ -195,7 +250,7 @@ function shuffled<T>(xs: readonly T[], rng: () => number): T[] {
 }
 
 /** Facile : coup aléatoire, mais prend une pièce gratuite une fois sur deux. */
-function easy(state: GameState, moves: IMove[], rng: () => number): BotDecision {
+function easy(state: GameState, moves: IMove[], rng: () => number, budget: Budget): BotDecision {
   const me = state.turn;
   let nodes = 0;
   if (rng() < 0.5) {
@@ -205,7 +260,9 @@ function easy(state: GameState, moves: IMove[], rng: () => number): BotDecision 
       if (!m.capture) continue;
       const victim = victimValue(state, state.board[m.to]);
       if (victim === 0) continue;
+      if (budget.exhausted) break;
       const after = applyInternal(state, m);
+      budget.nodes++;
       nodes++;
       let defended = false;
       for (const q of PLAYERS) if (q !== me && after.active[q] && attacks(after.board, m.to, q)) defended = true;
@@ -224,13 +281,21 @@ function easy(state: GameState, moves: IMove[], rng: () => number): BotDecision 
 }
 
 /** Moyen : un coup, puis menaces de prise des deux adversaires ; évite de laisser une pièce en prise. */
-function medium(state: GameState, moves: IMove[], rng: () => number): BotDecision {
+function medium(state: GameState, moves: IMove[], rng: () => number, budget: Budget): BotDecision {
   const me = state.turn;
-  let best: IMove = moves[0];
+  let best: IMove | null = null;
   let bestScore = -Infinity;
   let nodes = 0;
-  for (const m of shuffled(moves, rng)) {
+  let cutoff = false;
+  // Les prises d'abord : si le budget coupe, le meilleur coup partiel reste sensé.
+  const ordered = shuffled(moves, rng).sort((a, b) => Number(b.capture) - Number(a.capture));
+  for (const m of ordered) {
+    if (budget.exhausted) {
+      cutoff = true;
+      break;
+    }
     const after = applyInternal(state, m);
+    budget.nodes++;
     nodes++;
     let score: number;
     if (after.result || !after.active[me]) {
@@ -249,7 +314,9 @@ function medium(state: GameState, moves: IMove[], rng: () => number): BotDecisio
       best = m;
     }
   }
-  return { move: toPublic(best), nodes, depth: 1, score: Math.round(bestScore) };
+  // Repli garanti : rien d'évalué dans le budget → niveau facile.
+  if (best === null) return { ...easy(state, moves, rng, budget), cutoff: true };
+  return { move: toPublic(best), nodes, depth: 1, score: Math.round(bestScore), cutoff };
 }
 
 // ---------------------------------------------------------------------------
@@ -305,22 +372,25 @@ interface TTEntry {
 const moveKey = (m: IMove) => m.from * NUM_CELLS + m.to;
 
 class Searcher {
-  nodes = 0;
   private tt = new Map<number, TTEntry>();
   private me: Player;
-  private maxNodes: number;
+  private budget: Budget;
   /** Heuristique d'historique (par joueur) et coups « tueurs » (par ply). */
   private history = PLAYERS.map(() => new Float64Array(NUM_CELLS * NUM_CELLS));
   private killers: number[][] = Array.from({ length: 16 }, () => [-1, -1]);
 
-  constructor(me: Player, maxNodes: number) {
+  constructor(me: Player, budget: Budget) {
     this.me = me;
-    this.maxNodes = maxNodes;
+    this.budget = budget;
+  }
+
+  get nodes(): number {
+    return this.budget.nodes;
   }
 
   child(s: GameState, m: IMove): GameState {
-    if (this.nodes >= this.maxNodes) throw ABORT;
-    this.nodes++;
+    if (this.budget.exhausted) throw ABORT;
+    this.budget.nodes++;
     return applyInternal(s, m);
   }
 
@@ -425,9 +495,10 @@ class Searcher {
   }
 }
 
-function hard(state: GameState, moves: IMove[], rng: () => number, maxNodes: number, maxDepth: number): BotDecision {
+function hard(state: GameState, moves: IMove[], rng: () => number, budget: Budget, maxDepth: number): BotDecision {
   const me = state.turn;
-  const S = new Searcher(me, maxNodes);
+  const S = new Searcher(me, budget);
+  let cutoff = false;
   // Ordre de départ mélangé (départage aléatoire mais reproductible des coups équivalents).
   let rootOrder = S.order(state, shuffled(moves, rng), -1);
   let bestMove = rootOrder[0];
@@ -450,6 +521,7 @@ function hard(state: GameState, moves: IMove[], rng: () => number, maxNodes: num
       }
     } catch (e) {
       if (e !== ABORT) throw e;
+      cutoff = true;
       // Itération incomplète : on garde son meilleur coup s'il bat celui de l'itération précédente
       // (le premier coup exploré est l'ancien meilleur, donc la comparaison est sûre).
       if (iterBest && depthDone > 0 && iterBest !== bestMove && iterScore > (scores.get(bestMove) ?? Infinity)) {
@@ -468,7 +540,8 @@ function hard(state: GameState, moves: IMove[], rng: () => number, maxNodes: num
     if (bestScore >= WIN - 10) break;
     rootOrder = [bestMove, ...rootOrder.filter((m) => m !== bestMove).sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0))];
   }
-  return { move: toPublic(bestMove), nodes: S.nodes, depth: Math.max(depthDone, 1), score: Math.round(bestScore) };
+  // bestMove est toujours un coup légal : au pire le premier de l'ordonnancement (meilleure prise).
+  return { move: toPublic(bestMove), nodes: S.nodes, depth: Math.max(depthDone, 1), score: Math.round(bestScore), cutoff };
 }
 
 /** Choix détaillé du bot (coup, nœuds explorés, profondeur, score). */
@@ -477,15 +550,17 @@ export function botDecision(state: GameState, level: BotLevel, opts: BotOptions 
   if (moves.length === 0) throw new Error('aucun coup légal');
   const rng = opts.rng ?? Math.random;
   if (moves.length === 1) return { move: toPublic(moves[0]), nodes: 0, depth: 1, score: 0 };
+  const profile = LEVEL_PROFILES[level];
+  if (!profile) throw new Error(`niveau inconnu : ${String(level)}`);
+  const ms = Math.max(0.5, opts.timeBudgetMs !== undefined ? Math.min(opts.timeBudgetMs, level === 'facile' ? profile.budgetMs : Infinity) : profile.budgetMs);
+  const budget = new Budget(ms, opts.maxNodes ?? Math.max(8, Math.floor(ms * NODES_PER_MS)), opts.now ?? defaultClock);
   switch (level) {
     case 'facile':
-      return easy(state, moves, rng);
+      return easy(state, moves, rng, budget);
     case 'moyen':
-      return medium(state, moves, rng);
-    case 'difficile':
-      return hard(state, moves, rng, opts.maxNodes ?? DEFAULT_MAX_NODES, opts.maxDepth ?? 3);
+      return medium(state, moves, rng, budget);
     default:
-      throw new Error(`niveau inconnu : ${String(level)}`);
+      return hard(state, moves, rng, budget, opts.maxDepth ?? profile.maxDepth);
   }
 }
 

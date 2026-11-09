@@ -8,6 +8,12 @@ export const INACTIVITY_TTL_MS = 7 * 24 * 3600_000;
 export const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 /** Délai « naturel » avant le coup d'un bot : entre BOT_DELAY_MIN_MS et BOT_DELAY_MAX_MS. */
 export const BOT_DELAY_MIN_MS = 1200;
+
+/** Lit BOT_CPU_MS (ms, 1 à 1000) ; undefined si absent ou invalide. */
+export function parseBotCpuMs(v: unknown): number | undefined {
+  const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
+  return Number.isFinite(n) && n >= 1 && n <= 1000 ? n : undefined;
+}
 export const BOT_DELAY_MAX_MS = 2500;
 /** Noms de guerriers originaux donnés aux bots. */
 export const BOT_NAMES = ['Maître Kaïro', 'Ryuna', 'Sensei Brakk', 'Zéphyra', 'Oboru', 'Kenzan', 'Miyra Tempête', 'Vaskor'];
@@ -57,6 +63,8 @@ export interface RoomDeps {
   isConnected: (playerId: Player) => boolean;
   send: (playerId: Player, message: ServerMessage) => void;
   notify: (messages: PushMessage[]) => void;
+  /** Budget CPU d'un coup de bot (ms), variable d'env BOT_CPU_MS ; défaut DEFAULT_BOT_CPU_MS (8). */
+  botCpuMs?: number;
 }
 
 export type ServerMessage = Record<string, unknown> & { type: string };
@@ -334,7 +342,7 @@ export class RoomLogic {
       const bot = this.botAt(d, d.state.turn);
       const botDue = bot && d.botMoveAt != null && now >= d.botMoveAt;
       if (bot && (botDue || (d.turnDeadline !== null && now >= d.turnDeadline))) {
-        await this.play(botMove(d.state, bot.botLevel ?? 'moyen', { rng: this.deps.rng }), false);
+        await this.play(botMove(d.state, bot.botLevel ?? 'moyen', { rng: this.deps.rng, timeBudgetMs: this.deps.botCpuMs }), false);
         return;
       }
       if (d.turnDeadline !== null && now >= d.turnDeadline) {

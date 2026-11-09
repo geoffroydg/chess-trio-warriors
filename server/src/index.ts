@@ -6,6 +6,8 @@ export { Room };
 export interface Env {
   ROOM: DurableObjectNamespace<Room>;
   FCM_SERVICE_ACCOUNT?: string;
+  /** Budget CPU d'un coup de bot en ms (défaut 8). */
+  BOT_CPU_MS?: string;
 }
 
 const CORS = {
