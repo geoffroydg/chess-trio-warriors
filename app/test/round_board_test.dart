@@ -11,14 +11,14 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Position initiale : rangée 1 = T C F D R F C T, rangée 2 = pions, pour les 3 joueurs.
-GameMsg initialMsg({List<Map<String, String>> legal = const [], Map<String, dynamic>? event}) {
-  const back = ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R'];
-  final board = List<Map<String, dynamic>?>.filled(96, null);
+/// Position initiale : anneau 1 = T C F R D F C T, anneau 2 = pions, pour les 3 équipes.
+GameMsg initialMsg({List<Map<String, String>> legal = const [], Map<String, dynamic>? event, List<bool>? hilts}) {
+  const back = ['R', 'N', 'B', 'K', 'Q', 'B', 'N', 'R'];
+  final board = List<Map<String, dynamic>?>.filled(144, null);
   for (var s = 0; s < 3; s++) {
     for (var f = 0; f < 8; f++) {
-      board[s * 32 + f] = {'type': back[f], 'owner': s};
-      board[s * 32 + 8 + f] = {'type': 'P', 'owner': s};
+      board[s * 48 + f] = {'type': back[f], 'owner': s};
+      board[s * 48 + 8 + f] = {'type': 'P', 'owner': s};
     }
   }
   return GameMsg.fromJson({
@@ -29,6 +29,7 @@ GameMsg initialMsg({List<Map<String, String>> legal = const [], Map<String, dyna
       'active': [true, true, true],
       'ply': 0,
       'eliminations': [],
+      'hilts': hilts ?? [false, false, false],
     },
     'lastEvent': event,
     'turn': 0,
@@ -56,15 +57,18 @@ void main() {
       expect(game.cellAt(const Offset(2, 2)), isNull);
       // Médaillon : aucune case (le centre exact n'est dans aucun secteur).
       final mid = game.boardView!.toScreen(0.5, 0.5);
-      expect(geo.cells.any((c) => game.cellAt(mid) == c.id && c.ring != 4), isFalse);
+      expect(geo.cells.any((c) => game.cellAt(mid) == c.id && c.ring != 6), isFalse);
       // Le joueur local est en bas de l'écran.
-      final mine = game.cellPosition('${viewer}e1').y;
+      final mine = game.cellPosition('${viewer}d1').y;
       for (final c in geo.cells.where((c) => c.sector != viewer)) {
         expect(mine, greaterThan(game.cellPosition(c.id).y));
       }
       // Les pièces du devant sont plus grandes que celles du fond.
       final far = geo.cells.where((c) => c.sector != viewer && c.rank == 1).first.id;
-      expect(game.pieceRadius('${viewer}e1'), greaterThan(game.pieceRadius(far)));
+      expect(game.pieceRadius('${viewer}d1'), greaterThan(game.pieceRadius(far)));
+      // Les pièces rétrécissent vers le centre (anneau 6), sans devenir minuscules.
+      expect(game.ringScale(6), lessThan(game.ringScale(1)));
+      expect(game.ringScale(6), greaterThan(0.45));
       await tester.pumpWidget(const SizedBox());
     }
   });
@@ -109,6 +113,10 @@ void main() {
         initialMsg(legal: [
           {'from': '0g1', 'to': '0f3'},
           {'from': '0g1', 'to': '0h3'},
+        ], hilts: [
+          false,
+          true,
+          false
         ]),
         0);
     for (var i = 0; i < 10; i++) {
@@ -120,6 +128,12 @@ void main() {
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 50));
     }
+    // Effets visibles sur la capture : traînée d'un coup qui traverse le médaillon, éclat d'une poignée.
+    game.board.startTrail('0e4', '1a4', const Color(0xFFFFB84D));
+    game.board.flashHilt(1);
+    for (var i = 0; i < 7; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
     final dir = Platform.environment['CAPTURE_DIR'];
     if (dir == null) return;
     await tester.runAsync(() async {
@@ -127,7 +141,7 @@ void main() {
       final img = await rb.toImage(pixelRatio: 2);
       final data = await img.toByteData(format: ui.ImageByteFormat.png);
       Directory(dir).createSync(recursive: true);
-      File('$dir/plateau_rond.png').writeAsBytesSync(data!.buffer.asUint8List());
+      File('$dir/plateau_rond_6.png').writeAsBytesSync(data!.buffer.asUint8List());
     });
   });
 

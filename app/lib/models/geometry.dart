@@ -66,9 +66,48 @@ class CellGeom {
       );
 }
 
+/// Épée posée sur une frontière entre deux équipes : poignée sur l'anneau 1, lame sur les
+/// anneaux 2-3 (rayons normalisés).
+class SwordGeom {
+  const SwordGeom({
+    required this.border,
+    required this.teams,
+    required this.angle,
+    required this.hiltR0,
+    required this.hiltR1,
+    required this.bladeR0,
+    required this.bladeR1,
+  });
+  final int border;
+  final List<int> teams;
+  final double angle;
+  final double hiltR0, hiltR1, bladeR0, bladeR1;
+
+  factory SwordGeom.fromJson(Map<String, dynamic> j) {
+    double d(Map m, String k) => (m[k] as num).toDouble();
+    final h = j['hilt'] as Map, b = j['blade'] as Map;
+    return SwordGeom(
+      border: j['border'] as int,
+      teams: [for (final t in j['teams'] as List) t as int],
+      angle: (j['angle'] as num).toDouble(),
+      hiltR0: d(h, 'r0'),
+      hiltR1: d(h, 'r1'),
+      bladeR0: d(b, 'r0'),
+      bladeR1: d(b, 'r1'),
+    );
+  }
+}
+
 class BoardGeometry {
   BoardGeometry(this.outline, this.cells,
-      {this.round = false, this.rings = const [], this.medallion = 0, this.radius = 0.5});
+      {this.round = false,
+      this.rings = const [],
+      this.medallion = 0,
+      this.radius = 0.5,
+      this.swords = const []});
+
+  /// Les 3 épées (frontières entre équipes).
+  final List<SwordGeom> swords;
   final List<Offset> outline;
   final List<CellGeom> cells;
 
@@ -82,8 +121,12 @@ class BoardGeometry {
 
   CellGeom byId(String id) => cells[cellIndexOf(id)];
 
+  /// "0d1" (équipe, colonne a-h, anneau 1-6) -> index 0..143.
   static int cellIndexOf(String id) =>
-      (id.codeUnitAt(0) - 48) * 32 + (id.codeUnitAt(2) - 49) * 8 + (id.codeUnitAt(1) - 97);
+      (id.codeUnitAt(0) - 48) * 48 + (id.codeUnitAt(2) - 49) * 8 + (id.codeUnitAt(1) - 97);
+
+  /// Nombre d'anneaux de cases.
+  int get ringCount => rings.isEmpty ? 0 : rings.length - 1;
 
   factory BoardGeometry.fromJsonString(String s) {
     final j = json.decode(s) as Map<String, dynamic>;
@@ -100,6 +143,9 @@ class BoardGeometry {
       rings: [for (final r in (j['rings'] as List? ?? const [])) (r as num).toDouble()],
       medallion: ((j['medallion'] ?? 0) as num).toDouble(),
       radius: ((j['radius'] ?? 0.5) as num).toDouble(),
+      swords: [
+        for (final w in (j['swords'] as List? ?? const [])) SwordGeom.fromJson(w as Map<String, dynamic>)
+      ],
     );
   }
 

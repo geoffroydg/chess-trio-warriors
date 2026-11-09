@@ -7,13 +7,21 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final geo = BoardGeometry.fromJsonString(File('assets/geometry.json').readAsStringSync());
 
-  test('96 cases chargées, plateau rond', () {
-    expect(geo.cells, hasLength(96));
-    expect(geo.byId('0e1').index, 4);
-    expect(geo.byId('2h4').index, 95);
+  test('144 cases chargées, plateau rond à 6 anneaux, 3 épées', () {
+    expect(geo.cells, hasLength(144));
+    expect(geo.byId('0d1').index, 3);
+    expect(geo.byId('2h6').index, 143);
     expect(geo.round, isTrue);
-    expect(geo.rings, hasLength(5));
-    expect(geo.medallion, closeTo(0.11, 0.01));
+    expect(geo.rings, hasLength(7));
+    expect(geo.ringCount, 6);
+    expect(geo.medallion, closeTo(0.1, 0.005));
+    expect(geo.swords, hasLength(3));
+    expect(geo.swords.map((s) => s.angle), [210, 90, 330]);
+    for (final sw in geo.swords) {
+      expect(sw.hiltR1, closeTo(0.5, 1e-9));
+      expect(sw.hiltR0, closeTo(sw.bladeR1, 1e-9));
+      expect(sw.bladeR0, closeTo(geo.rings[3], 1e-9));
+    }
     expect(geo.outline.length, greaterThan(48));
     for (final c in geo.cells) {
       expect(c.ring, c.rank);
@@ -26,7 +34,7 @@ void main() {
       final proj = BoardProjection(viewer: viewer);
       final avg = List<double>.filled(3, 0);
       for (final c in geo.cells) {
-        avg[c.sector] += proj.project(c.x, c.y).dy / 32;
+        avg[c.sector] += proj.project(c.x, c.y).dy / 48;
       }
       final lowest = avg.indexOf(avg.reduce((a, b) => a > b ? a : b));
       expect(lowest, viewer);

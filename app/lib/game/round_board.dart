@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
+import 'package:flutter/animation.dart' show Curves;
 import 'package:flutter/painting.dart';
 
 import '../models/geometry.dart';
@@ -95,7 +96,8 @@ class RoundBoardPainter {
   // Couche statique.
   // ---------------------------------------------------------------------------
 
-  void paintStatic(Canvas canvas, BoardView v, {List<bool> active = const [true, true, true]}) {
+  void paintStatic(Canvas canvas, BoardView v,
+      {List<bool> active = const [true, true, true], List<bool> hilts = const [false, false, false]}) {
     final rim = rimScreen(v);
     final rimPath = Path()..addPolygon(rim, true);
     final th = v.scale * rimThickness;
@@ -161,7 +163,7 @@ class RoundBoardPainter {
 
     canvas.save();
     canvas.transform(v.matrix);
-    _paintTop(canvas, v, active);
+    _paintTop(canvas, v, active, hilts);
     canvas.restore();
 
     // Reflet spéculaire sur le liseré (espace écran).
@@ -178,7 +180,7 @@ class RoundBoardPainter {
     );
   }
 
-  void _paintTop(Canvas canvas, BoardView v, List<bool> active) {
+  void _paintTop(Canvas canvas, BoardView v, List<bool> active, List<bool> hilts) {
     final r = _r;
     final rimR = r * rimFactor;
 
@@ -275,47 +277,34 @@ class RoundBoardPainter {
       canvas.drawLine(a, b, sep);
     }
 
-    // Diagonales colorées discrètes (de coin à coin, dans chaque arc de joueur).
-    final rings = geometry.rings;
-    if (rings.length == 5) {
-      final starts = <double>[for (var s = 0; s < 3; s++) _sectorStart(s)];
-      for (var s = 0; s < 3; s++) {
-        final col = boardPlayerColors[s];
-        final p = Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round
-          ..strokeWidth = r * 0.0042
-          ..color = col.withValues(alpha: 0.42);
-        for (var f0 = 0; f0 <= 8; f0++) {
-          for (final dir in const [1, -1]) {
-            final path = Path();
-            var started = false;
-            for (var k = 0; k <= 4; k++) {
-              final f = f0 + dir * k;
-              if (f < 0 || f > 8) break;
-              // Segment interpolé (spirale) entre deux coins.
-              final steps = k == 0 ? 1 : 6;
-              for (var t = 1; t <= steps; t++) {
-                final u = k == 0 ? 0.0 : (k - 1) + t / steps;
-                final ang = starts[s] + 15 * (f0 + dir * u);
-                final idx = u.floor().clamp(0, 3);
-                final fr = u - idx;
-                final rho = rings[idx] + (rings[math.min(idx + 1, 4)] - rings[idx]) * fr;
-                final pt = BoardView.polar(rho, ang);
-                if (!started) {
-                  path.moveTo(pt.dx, pt.dy);
-                  started = true;
-                } else {
-                  path.lineTo(pt.dx, pt.dy);
-                }
-              }
+    final starts = <double>[for (var s = 0; s < 3; s++) _sectorStart(s)];
+    if (geometry.ringCount >= 2) {
+      // Lignes de trajet diagonales (centres de cases, pas « anneau ±1, colonne ±1 ») : fines
+      // spirales colorées discrètes, de la couleur de l'équipe où elles commencent (anneau 1).
+      for (var w0 = 0; w0 < 24; w0++) {
+        final col = boardPlayerColors[_wedgeTeam(w0)];
+        for (final dir in const [1, -1]) {
+          final path = Path();
+          final n = geometry.ringCount;
+          for (var i = 0; i <= (n - 1) * 6 + 3; i++) {
+            final t = i / 6; // 0 .. n - 0.5
+            final pt = BoardView.polar(_ringMid(t), (w0 + dir * t) * 15.0 + 7.5);
+            if (i == 0) {
+              path.moveTo(pt.dx, pt.dy);
+            } else {
+              path.lineTo(pt.dx, pt.dy);
             }
-            if (f0 + dir * 1 >= 0 && f0 + dir * 1 <= 8) canvas.drawPath(path, p);
           }
+          canvas.drawPath(
+              path,
+              Paint()
+                ..style = PaintingStyle.stroke
+                ..strokeCap = StrokeCap.round
+                ..strokeWidth = r * 0.0032
+                ..color = col.withValues(alpha: dir > 0 ? 0.30 : 0.22));
         }
       }
-      // Frontières entre joueurs (h d'un joueur / a du suivant ne sont pas voisines) :
-      // filets métalliques soulignés de la couleur des deux joueurs.
+      // Frontières entre équipes : filets métalliques (les épées sont dessinées par-dessus).
       for (var s = 0; s < 3; s++) {
         final ang = starts[s];
         final a = BoardView.polar(_med, ang);
@@ -324,37 +313,146 @@ class RoundBoardPainter {
             a,
             b,
             Paint()
-              ..strokeWidth = r * 0.016
+              ..strokeWidth = r * 0.012
               ..strokeCap = StrokeCap.round
               ..color = const Color(0xFF1A130C));
         canvas.drawLine(
             a,
             b,
             Paint()
-              ..strokeWidth = r * 0.008
+              ..strokeWidth = r * 0.005
               ..strokeCap = StrokeCap.round
               ..shader = ui.Gradient.linear(a, b, const [Color(0xFF8A7244), Color(0xFFE6CF98), Color(0xFF8A7244)], const [0, 0.5, 1]));
-        // Milieu de l'arc (entre d et e) : filet fin de la couleur du joueur.
+        // Milieu de l'arc (entre d et e) : filet fin de la couleur de l'équipe.
         final m0 = BoardView.polar(_med, ang + 60);
         final m1 = BoardView.polar(r, ang + 60);
         canvas.drawLine(
             m0,
             m1,
             Paint()
-              ..strokeWidth = r * 0.005
-              ..color = boardPlayerColors[s].withValues(alpha: 0.55));
+              ..strokeWidth = r * 0.004
+              ..color = boardPlayerColors[s].withValues(alpha: 0.45));
       }
-      // Lettres de colonnes sur le liseré, dans la couleur du joueur.
+      // Lettres de colonnes sur le liseré, dans la couleur de l'équipe.
       for (var s = 0; s < 3; s++) {
         for (var f = 0; f < 8; f++) {
           _label(canvas, 'abcdefgh'[f], BoardView.polar(r * (1 + rimFactor) / 2, starts[s] + 15 * f + 7.5),
               starts[s] + 15 * f + 7.5, r * 0.058, Color.lerp(boardPlayerColors[s], const Color(0xFF1E1408), 0.6)!);
         }
       }
+      for (final sw in geometry.swords) {
+        _paintSword(canvas, sw, open: sw.border < hilts.length && hilts[sw.border]);
+      }
     }
 
     _paintMedallionBase(canvas);
   }
+
+  /// Rayon (normalisé) au milieu de l'anneau t (0 = anneau 1), interpolé pour t fractionnaire ;
+  /// au-delà du dernier anneau, on rejoint le bord du médaillon.
+  double _ringMid(double t) {
+    final rings = geometry.rings;
+    final n = geometry.ringCount;
+    double mid(int k) => k >= n ? rings[n] : (rings[k] + rings[k + 1]) / 2;
+    final k = t.floor().clamp(0, n);
+    final fr = t - k;
+    return mid(k) + (mid(math.min(k + 1, n)) - mid(k)) * fr;
+  }
+
+  late final List<int> _teamOfWedge = () {
+    final out = List<int>.filled(24, 0);
+    for (final c in geometry.cells) {
+      if (c.wedge >= 0 && c.wedge < 24) out[c.wedge] = c.sector;
+    }
+    return out;
+  }();
+  int _wedgeTeam(int w) => _teamOfWedge[((w % 24) + 24) % 24];
+
+  /// Épée sur une frontière : lame (anneaux 2-3) pointée vers le centre, poignée sur l'anneau 1.
+  /// Poignée ouverte : garde translucide et gemme cyan (le passage est libre, sans prise).
+  void _paintSword(Canvas canvas, SwordGeom sw, {required bool open}) {
+    final r = _r;
+    final a = sw.angle;
+    Offset pt(double rho, double halfWidth) =>
+        BoardView.polar(rho, a + (halfWidth / rho) * 180 / math.pi);
+    // Ombre portée.
+    final bladeHalf = r * 0.024;
+    final blade = Path()
+      ..moveTo(pt(sw.bladeR1, -bladeHalf).dx, pt(sw.bladeR1, -bladeHalf).dy)
+      ..lineTo(pt(sw.bladeR0 + r * 0.04, -bladeHalf * 0.8).dx, pt(sw.bladeR0 + r * 0.04, -bladeHalf * 0.8).dy)
+      ..lineTo(pt(sw.bladeR0, 0).dx, pt(sw.bladeR0, 0).dy)
+      ..lineTo(pt(sw.bladeR0 + r * 0.04, bladeHalf * 0.8).dx, pt(sw.bladeR0 + r * 0.04, bladeHalf * 0.8).dy)
+      ..lineTo(pt(sw.bladeR1, bladeHalf).dx, pt(sw.bladeR1, bladeHalf).dy)
+      ..close();
+    canvas.drawPath(
+        blade.shift(Offset(r * 0.006, r * 0.008)),
+        Paint()
+          ..color = const Color(0x90000000)
+          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.006));
+    final b0 = pt(sw.bladeR1, 0), b1 = pt(sw.bladeR0, 0);
+    canvas.drawPath(
+        blade,
+        Paint()
+          ..shader = ui.Gradient.linear(pt(sw.bladeR1, -bladeHalf), pt(sw.bladeR1, bladeHalf), const [
+            Color(0xFF8E98A6),
+            Color(0xFFF2F6FA),
+            Color(0xFFB8C2CE),
+            Color(0xFF5E6874),
+          ], const [0, 0.42, 0.55, 1]));
+    canvas.drawLine(b0, b1, Paint()
+      ..strokeWidth = r * 0.003
+      ..color = const Color(0x80FFFFFF));
+    canvas.drawPath(
+        blade,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = r * 0.003
+          ..color = const Color(0xFF2A2F38));
+    // Poignée : fusée, garde et pommeau.
+    final guardRho = sw.hiltR0 + r * 0.004;
+    final gripEnd = sw.hiltR1 - r * 0.018;
+    final gold = open ? const Color(0x9077E8FF) : const Color(0xFFE2C178);
+    final goldDark = open ? const Color(0x80306A80) : const Color(0xFF7A5A26);
+    canvas.drawLine(pt(guardRho, 0), pt(gripEnd, 0), Paint()
+      ..strokeWidth = r * 0.022
+      ..strokeCap = StrokeCap.round
+      ..color = open ? const Color(0x80213A48) : const Color(0xFF3B2414));
+    // Bandes de cuir de la fusée.
+    for (var k = 1; k < 5; k++) {
+      final rho = guardRho + (gripEnd - guardRho) * k / 5;
+      canvas.drawLine(pt(rho, -r * 0.008), pt(rho, r * 0.008), Paint()
+        ..strokeWidth = r * 0.0025
+        ..color = open ? const Color(0x6077E8FF) : const Color(0xFF6E4A2A));
+    }
+    final guardHalf = r * 0.07;
+    final guard = Path()
+      ..moveTo(pt(guardRho - r * 0.009, -guardHalf).dx, pt(guardRho - r * 0.009, -guardHalf).dy)
+      ..lineTo(pt(guardRho + r * 0.01, -guardHalf * 0.85).dx, pt(guardRho + r * 0.01, -guardHalf * 0.85).dy)
+      ..lineTo(pt(guardRho + r * 0.01, guardHalf * 0.85).dx, pt(guardRho + r * 0.01, guardHalf * 0.85).dy)
+      ..lineTo(pt(guardRho - r * 0.009, guardHalf).dx, pt(guardRho - r * 0.009, guardHalf).dy)
+      ..close();
+    canvas.drawPath(guard, Paint()
+      ..shader = ui.Gradient.linear(pt(guardRho, -guardHalf), pt(guardRho, guardHalf), [goldDark, gold, goldDark], const [0, 0.5, 1]));
+    canvas.drawPath(guard, Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = r * 0.0025
+      ..color = open ? const Color(0xA0B8F6FF) : const Color(0xFF3A2810));
+    final gem = pt(guardRho, 0);
+    canvas.drawCircle(gem, r * 0.012, Paint()..color = open ? const Color(0xFF8FF4FF) : const Color(0xFFC0263A));
+    canvas.drawCircle(gem.translate(-r * 0.003, -r * 0.003), r * 0.003, Paint()..color = const Color(0xC0FFFFFF));
+    final pommel = pt(gripEnd + r * 0.006, 0);
+    canvas.drawCircle(pommel, r * 0.016, Paint()
+      ..shader = ui.Gradient.radial(pommel.translate(-r * 0.004, -r * 0.004), r * 0.014, [gold, goldDark]));
+    if (open) {
+      // Halo permanent discret : la poignée est ouverte.
+      canvas.drawCircle(gem, r * 0.03, Paint()
+        ..blendMode = BlendMode.plus
+        ..shader = ui.Gradient.radial(gem, r * 0.03, const [Color(0x6060E8FF), Color(0x00000000)]));
+    }
+  }
+
+  /// Centre (coordonnées normalisées) de la poignée d'une épée.
+  Offset hiltCenter(SwordGeom sw) => BoardView.polar((sw.hiltR0 + sw.hiltR1) / 2, sw.angle);
 
   double _sectorStart(int s) {
     for (final c in geometry.cells) {
@@ -504,6 +602,126 @@ class RoundBoardPainter {
     );
   }
 
+  /// Traînée lumineuse d'un coup qui traverse le médaillon : départ → centre → arrivée
+  /// (courbe lisse qui passe exactement par le centre). [age] en secondes.
+  static const trailDraw = 0.45, trailFade = 1.1;
+
+  Path centerTrailPath(Offset from, Offset to) {
+    const c = _center;
+    var t = to - from;
+    final len = t.distance;
+    t = len < 1e-9 ? Offset.zero : t / len;
+    final k = _med * 0.55;
+    return Path()
+      ..moveTo(from.dx, from.dy)
+      ..cubicTo(from.dx + (c.dx - from.dx) * 0.4, from.dy + (c.dy - from.dy) * 0.4, c.dx - t.dx * k, c.dy - t.dy * k,
+          c.dx, c.dy)
+      ..cubicTo(c.dx + t.dx * k, c.dy + t.dy * k, to.dx + (c.dx - to.dx) * 0.4, to.dy + (c.dy - to.dy) * 0.4, to.dx,
+          to.dy);
+  }
+
+  void paintCenterTrail(Canvas canvas, Offset from, Offset to, double age, Color color) {
+    if (age < 0 || age > trailDraw + trailFade) return;
+    final r = _r;
+    final metrics = centerTrailPath(from, to).computeMetrics().toList();
+    if (metrics.isEmpty) return;
+    final m = metrics.first;
+    final total = m.length;
+    final head = (age / trailDraw).clamp(0.0, 1.0) * total;
+    final fading = age > trailDraw ? ((age - trailDraw) / trailFade).clamp(0.0, 1.0) : 0.0;
+    final tail = math.max(0.0, head - total * 0.9) + fading * total * 0.6;
+    if (head - tail <= 1e-6) return;
+    final seg = m.extractPath(tail, head);
+    final alpha = 1 - fading;
+    canvas.drawPath(
+        seg,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = r * 0.045
+          ..blendMode = BlendMode.plus
+          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.018)
+          ..color = color.withValues(alpha: 0.55 * alpha));
+    canvas.drawPath(
+        seg,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = r * 0.009
+          ..blendMode = BlendMode.plus
+          ..color = Color.fromRGBO(255, 255, 255, 0.85 * alpha));
+    // Tête de la traînée et éclair du médaillon au passage.
+    final pos = m.getTangentForOffset(head)?.position;
+    if (pos != null && fading == 0) {
+      canvas.drawCircle(
+          pos,
+          r * 0.03,
+          Paint()
+            ..blendMode = BlendMode.plus
+            ..shader = ui.Gradient.radial(pos, r * 0.03, [const Color(0xFFFFFFFF), color.withValues(alpha: 0)]));
+    }
+    final passed = head / total;
+    if (passed > 0.4) {
+      final f = math.max(0.0, 1 - (age - trailDraw * 0.5) / (trailDraw + trailFade * 0.6));
+      canvas.drawCircle(
+          _center,
+          _med * (0.6 + 0.4 * (1 - f)),
+          Paint()
+            ..blendMode = BlendMode.plus
+            ..shader = ui.Gradient.radial(_center, _med, [
+              color.withValues(alpha: 0.6 * f),
+              color.withValues(alpha: 0.15 * f),
+              const Color(0x00000000),
+            ], const [0, 0.6, 1]));
+    }
+  }
+
+  /// Éclat lumineux d'une poignée qui vient de s'ouvrir. [age] en secondes.
+  static const hiltFlashLife = 2.4;
+
+  void paintHiltFlash(Canvas canvas, SwordGeom sw, double age) {
+    if (age < 0 || age > hiltFlashLife) return;
+    final r = _r;
+    final u = age / hiltFlashLife;
+    final k = 1 - u;
+    final c = hiltCenter(sw);
+    final a = BoardView.polar(sw.bladeR0, sw.angle);
+    final b = BoardView.polar(sw.hiltR1, sw.angle);
+    final pulse = 0.6 + 0.4 * math.sin(age * 14);
+    canvas.drawLine(
+        a,
+        b,
+        Paint()
+          ..strokeWidth = r * 0.06 * k
+          ..strokeCap = StrokeCap.round
+          ..blendMode = BlendMode.plus
+          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.02)
+          ..color = Color.fromRGBO(110, 230, 255, 0.7 * k * pulse));
+    for (var i = 0; i < 2; i++) {
+      final e = Curves.easeOutCubic.transform(((u * 1.6) - i * 0.25).clamp(0.0, 1.0));
+      canvas.drawCircle(
+          c,
+          r * (0.02 + 0.16 * e),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = r * 0.012 * (1 - e)
+            ..blendMode = BlendMode.plus
+            ..color = Color.fromRGBO(150, 240, 255, 0.9 * (1 - e)));
+    }
+    for (var i = 0; i < 10; i++) {
+      final ang = i * 36.0 + age * 40;
+      final p0 = c + Offset(math.cos(ang * math.pi / 180), math.sin(ang * math.pi / 180)) * (r * 0.02);
+      final p1 = c + Offset(math.cos(ang * math.pi / 180), math.sin(ang * math.pi / 180)) * (r * (0.04 + 0.08 * u));
+      canvas.drawLine(
+          p0,
+          p1,
+          Paint()
+            ..strokeWidth = r * 0.004
+            ..blendMode = BlendMode.plus
+            ..color = Color.fromRGBO(255, 255, 255, 0.8 * k));
+    }
+  }
+
   void paintHighlights(
     Canvas canvas, {
     required double time,
@@ -590,13 +808,30 @@ class BoardComponent extends PositionComponent with TapCallbacks {
   ui.Picture? _picture;
   Float64List? _builtFor;
   List<bool> _builtActive = const [];
+  List<bool> _builtHilts = const [];
   double _builtRatio = 0;
+
+  final List<({String from, String to, double start, Color color})> _trails = [];
+  final Map<int, double> _flashes = {};
+
+  /// Traînée d'un coup qui traverse le médaillon.
+  void startTrail(String from, String to, Color color) {
+    _trails.add((from: from, to: to, start: _time, color: color));
+  }
+
+  /// Éclat d'une poignée qui vient de s'ouvrir (frontière [border]).
+  void flashHilt(int border) => _flashes[border] = _time;
+
+  /// Effets en cours (tests).
+  int get activeEffects => _trails.length + _flashes.length;
 
   RoundBoardPainter get painter => _painter ??= RoundBoardPainter(host.geometry);
 
   @override
   void update(double dt) {
     _time += dt;
+    _trails.removeWhere((t) => _time - t.start > RoundBoardPainter.trailDraw + RoundBoardPainter.trailFade);
+    _flashes.removeWhere((_, t) => _time - t > RoundBoardPainter.hiltFlashLife);
   }
 
   @override
@@ -618,12 +853,13 @@ class BoardComponent extends PositionComponent with TapCallbacks {
 
   void _ensureStatic(BoardView v) {
     final active = host.activePlayers;
+    final hilts = host.hilts;
     final ratio = _ratio;
     if (_builtFor != null &&
         _listEq(_builtFor!, v.matrix) &&
         _builtRatio == ratio &&
-        _builtActive.length == active.length &&
-        [for (var i = 0; i < active.length; i++) active[i] == _builtActive[i]].every((x) => x)) {
+        _boolsEq(_builtActive, active) &&
+        _boolsEq(_builtHilts, hilts)) {
       return;
     }
     _image?.dispose();
@@ -631,7 +867,7 @@ class BoardComponent extends PositionComponent with TapCallbacks {
     _image = null;
     final rec = ui.PictureRecorder();
     final c = Canvas(rec);
-    painter.paintStatic(c, v, active: active);
+    painter.paintStatic(c, v, active: active, hilts: hilts);
     final pic = rec.endRecording();
     _picture = pic;
     final w = (size.x * ratio).ceil(), h = (size.y * ratio).ceil();
@@ -650,7 +886,16 @@ class BoardComponent extends PositionComponent with TapCallbacks {
     }
     _builtFor = v.matrix;
     _builtActive = List.of(active);
+    _builtHilts = List.of(hilts);
     _builtRatio = ratio;
+  }
+
+  static bool _boolsEq(List<bool> a, List<bool> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   static bool _listEq(Float64List a, Float64List b) {
@@ -690,6 +935,15 @@ class BoardComponent extends PositionComponent with TapCallbacks {
       lastTo: host.lastTo,
       checked: host.checkedKings,
     );
+    for (final t in _trails) {
+      final a = host.geometry.byId(t.from), b = host.geometry.byId(t.to);
+      painter.paintCenterTrail(canvas, Offset(a.x, a.y), Offset(b.x, b.y), _time - t.start, t.color);
+    }
+    for (final e in _flashes.entries) {
+      for (final sw in host.geometry.swords) {
+        if (sw.border == e.key) painter.paintHiltFlash(canvas, sw, _time - e.value);
+      }
+    }
     canvas.restore();
   }
 
@@ -708,6 +962,9 @@ abstract class BoardHost {
   BoardGeometry get geometry;
   BoardView? get boardView;
   List<bool> get activePlayers;
+
+  /// Poignées ouvertes (index = frontière).
+  List<bool> get hilts;
   String? get selected;
   Set<String> get targets;
   Set<String> get checkedKings;

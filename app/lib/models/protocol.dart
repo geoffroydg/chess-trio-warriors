@@ -28,19 +28,26 @@ String pieceLetter(PieceType t) => switch (t) {
     };
 
 class Piece {
-  const Piece(this.type, this.owner);
+  const Piece(this.type, this.owner, {this.crossed = false});
   final PieceType type;
   final int owner;
-  factory Piece.fromJson(Map<String, dynamic> j) =>
-      Piece(pieceTypeFromCode(j['type'] as String), j['owner'] as int);
+
+  /// Pion ayant traversé le centre (il avance vers l'extérieur).
+  final bool crossed;
+  factory Piece.fromJson(Map<String, dynamic> j) => Piece(
+      pieceTypeFromCode(j['type'] as String), j['owner'] as int,
+      crossed: (j['crossed'] ?? false) as bool);
 }
 
-/// Identifiant de case ("0e2") -> index 0..95.
+/// Pièces de promotion (codes du protocole), dans l'ordre du sélecteur.
+const promotionCodes = ['Q', 'R', 'B', 'N'];
+
+/// Identifiant de case ("0e2" : équipe, colonne a-h, anneau 1-6) -> index 0..143.
 int cellIndex(String id) {
   final s = id.codeUnitAt(0) - 48;
   final f = id.codeUnitAt(1) - 97;
   final r = id.codeUnitAt(2) - 49;
-  return s * 32 + r * 8 + f;
+  return s * 48 + r * 8 + f;
 }
 
 class PlayerInfo {
@@ -167,6 +174,11 @@ class GameEvent {
     this.piece,
     this.captured,
     this.promotion = false,
+    this.promotionType,
+    this.crossedCenter = false,
+    this.enPassant = false,
+    this.kingCaptured,
+    this.hiltsOpened = const [],
     this.castleRookFrom,
     this.castleRookTo,
     this.checks = const [],
@@ -184,6 +196,19 @@ class GameEvent {
   final PieceType? piece;
   final Captured? captured;
   final bool promotion;
+
+  /// Pièce choisie pour la promotion ('Q', 'R', 'B', 'N').
+  final String? promotionType;
+
+  /// Le coup a traversé le médaillon central.
+  final bool crossedCenter;
+  final bool enPassant;
+
+  /// Équipe dont le roi « emprisonné » vient d'être capturé.
+  final int? kingCaptured;
+
+  /// Frontières (0..2) dont la poignée vient de s'ouvrir.
+  final List<int> hiltsOpened;
   final String? castleRookFrom;
   final String? castleRookTo;
   final List<CheckInfo> checks;
@@ -214,6 +239,11 @@ class GameEvent {
               at: cap['at'] as String,
             ),
       promotion: j['promotion'] != null,
+      promotionType: j['promotion'] as String?,
+      crossedCenter: (j['crossedCenter'] ?? false) as bool,
+      enPassant: (j['enPassant'] ?? false) as bool,
+      kingCaptured: j['kingCaptured'] as int?,
+      hiltsOpened: ((j['hiltsOpened'] ?? const []) as List).map((e) => e as int).toList(),
       castleRookFrom: castle?['rookFrom'] as String?,
       castleRookTo: castle?['rookTo'] as String?,
       checks: ((j['checks'] ?? const []) as List)
@@ -243,8 +273,12 @@ class GameState {
     required this.ply,
     required this.eliminations,
     this.result,
+    this.hilts = const [false, false, false],
   });
   final String mode;
+
+  /// hilts[b] : la poignée de la frontière b est ouverte.
+  final List<bool> hilts;
   final List<Piece?> board;
   final int turn;
   final List<bool> active;
@@ -266,13 +300,17 @@ class GameState {
         result: j['result'] == null
             ? null
             : GameResult.fromJson(j['result'] as Map<String, dynamic>),
+        hilts: ((j['hilts'] ?? const [false, false, false]) as List).map((e) => e as bool).toList(),
       );
 }
 
 class LegalMove {
-  const LegalMove(this.from, this.to);
+  const LegalMove(this.from, this.to, {this.promotion});
   final String from;
   final String to;
+
+  /// Variante de promotion ('Q', 'R', 'B', 'N') ; null si le coup ne promeut pas.
+  final String? promotion;
 }
 
 class GameMsg {
@@ -302,7 +340,8 @@ class GameMsg {
       lastEvent: le == null ? null : GameEvent.fromJson(le),
       turn: j['turn'] as int?,
       legalMoves: ((j['legalMoves'] ?? const []) as List)
-          .map((e) => LegalMove(e['from'] as String, e['to'] as String))
+          .map((e) => LegalMove(e['from'] as String, e['to'] as String,
+              promotion: e['promotion'] as String?))
           .toList(),
       turnDeadline: (j['turnDeadline'] as num?)?.toInt(),
       over: (j['over'] ?? false) as bool,
@@ -382,5 +421,6 @@ String reasonLabel(String reason) => switch (reason) {
       'fiftyMoves' => 'Règle des 50 coups',
       'repetition' => 'Triple répétition',
       'stalemate' => 'Plus aucun coup possible',
+      'blockade' => 'Blocage : aucune équipe ne peut jouer',
       _ => reason,
     };

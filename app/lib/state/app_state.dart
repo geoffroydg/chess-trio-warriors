@@ -210,8 +210,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return ok;
   }
 
-  bool sendMove(String from, String to) =>
-      _conn?.send({'type': 'move', 'from': from, 'to': to}) ?? false;
+  bool sendMove(String from, String to, [String? promotion]) => _conn?.send({
+        'type': 'move',
+        'from': from,
+        'to': to,
+        'promotion': ?promotion,
+      }) ??
+      false;
 
   void toast(String msg) => _toasts.add(msg);
 

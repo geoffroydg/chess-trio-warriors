@@ -11,7 +11,9 @@ import 'arena_backdrop.dart';
 import 'attacks.dart';
 import 'fx.dart';
 import 'piece_component.dart';
+import 'promotion_picker.dart';
 import 'round_board.dart';
+import 'warrior_art.dart';
 import 'warrior_piece.dart';
 
 /// Jeu Flame : plateau rond en vue inclinée (perspective), pièces, sélection et animations.
@@ -36,8 +38,8 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
   final BoardProjection projection;
   final PieceFactory pieceFactory;
 
-  /// Appelé quand le joueur choisit un coup (départ, arrivée).
-  void Function(String from, String to)? onMove;
+  /// Appelé quand le joueur choisit un coup (départ, arrivée, promotion choisie ou null).
+  void Function(String from, String to, String? promotion)? onMove;
   void Function(String cellId)? onSelect;
 
   // --- Évènements pour l'audio (déclenchés à la réception d'un nouveau coup) ---
@@ -142,6 +144,12 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
   @override
   List<bool> get activePlayers => _msg?.state.active ?? const [true, true, true];
 
+  @override
+  List<bool> get hilts => _msg?.state.hilts ?? const [false, false, false];
+
+  /// Sélecteur de promotion ouvert (null sinon).
+  PromotionPicker? picker;
+
   Offset _toScreen(Offset p) => Offset(origin.dx + p.dx * scale, origin.dy + p.dy * scale);
 
   Vector2 cellPosition(String id) {
@@ -150,13 +158,30 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
     return Vector2(p.dx, p.dy);
   }
 
-  /// Rayon d'un pion à l'endroit de la case (perspective ; un peu plus petit vers le centre,
-  /// où les cases du plateau rond sont plus étroites).
+  /// Taille utile (normalisée) des cases de chaque anneau : min(épaisseur, largeur d'arc).
+  late final List<double> _ringSize = () {
+    final out = <double>[];
+    final rings = geometry.rings;
+    for (var k = 0; k + 1 < rings.length; k++) {
+      final mid = (rings[k] + rings[k + 1]) / 2;
+      out.add(math.min(rings[k] - rings[k + 1], mid * math.pi / 12));
+    }
+    return out;
+  }();
+
+  /// Échelle des pièces selon l'anneau (1 = anneau extérieur) : les cases rétrécissent vers le
+  /// centre ; les guerriers aussi, mais moins vite pour rester lisibles.
+  double ringScale(int ring) {
+    if (_ringSize.isEmpty) return 1;
+    final k = (ring - 1).clamp(0, _ringSize.length - 1);
+    return math.pow(_ringSize[k] / _ringSize[0], 0.6).toDouble();
+  }
+
+  /// Rayon d'un pion à l'endroit de la case (perspective et anneau).
   double pieceRadius(String id) {
     final c = geometry.byId(id);
     final ring = c.ring == 0 ? 1 : c.ring;
-    const ringScale = [1.0, 0.92, 0.82, 0.72];
-    return scale * 0.056 * ringScale[ring - 1] * projection.scaleAt(c.x, c.y);
+    return scale * 0.056 * ringScale(ring) * projection.scaleAt(c.x, c.y);
   }
 
   void _place(PieceComponent p, String id) =>
@@ -173,6 +198,7 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
     _lastPly = msg.state.ply;
     selected = null;
     targets = {};
+    _closePicker();
     final ev = msg.lastEvent;
     lastFrom = ev?.from;
     lastTo = ev?.to;
@@ -205,8 +231,21 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
     return null;
   }
 
-  /// Callbacks audio + bannières « ÉCHEC ! » / « MAT ! » (après la prise éventuelle).
+  /// Callbacks audio + bannières « ÉCHEC ! » / « MAT ! » (après la prise éventuelle), traînée
+  /// des coups qui traversent le médaillon, éclat des poignées qui s'ouvrent.
   void _announce(GameEvent ev) {
+    if (ev.crossedCenter && ev.from != null && ev.to != null) {
+      board.startTrail(ev.from!, ev.to!, WarriorPalette.of(ev.player).aura);
+    }
+    for (final b in ev.hiltsOpened) {
+      board.flashHilt(b);
+    }
+    if (ev.hiltsOpened.isNotEmpty && ev.mates.isEmpty && ev.checks.isEmpty) {
+      add(TimerComponent(
+          period: ev.captured != null ? 1.0 : 0.5,
+          removeOnFinish: true,
+          onTick: () => showBanner('POIGNÉE OUVERTE !', const Color(0xFF77E8FF), seconds: 1.4, sizeFactor: 0.085)));
+    }
     if (ev.piece != null && ev.from != null && ev.to != null) {
       onMoveEvent?.call(ev.piece!, ev.from!, ev.to!);
     }
@@ -421,6 +460,13 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
 
   @override
   void handleTap(Offset pos) {
+    final pk = picker;
+    if (pk != null) {
+      final choice = pk.optionAt(pos);
+      _closePicker();
+      if (choice != null) onMove?.call(pk.from, pk.to, choice);
+      return;
+    }
     if (attackPlaying) {
       finishSequences(); // un tap passe l'animation d'attaque
       return;
@@ -430,8 +476,16 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
     if (id == null || msg == null || !myTurn) return;
     if (selected != null && targets.contains(id)) {
       final from = selected!;
+      final promos = [
+        for (final m in msg.legalMoves)
+          if (m.from == from && m.to == id && m.promotion != null) m.promotion!
+      ];
       _clearSelection();
-      onMove?.call(from, id);
+      if (promos.length > 1) {
+        openPicker(from, id, promos);
+        return;
+      }
+      onMove?.call(from, id, promos.isEmpty ? null : promos.first);
       return;
     }
     if (selected == id) {
@@ -446,6 +500,28 @@ class ChessGame extends FlameGame with FxHost implements BoardHost {
       _pieces[id]?.setSelected(true);
       onSelect?.call(id);
     }
+  }
+
+  /// Ouvre le sélecteur de promotion (4 guerriers) pour le coup [from] → [to].
+  void openPicker(String from, String to, List<String> options) {
+    _closePicker();
+    final ordered = [for (final c in promotionCodes) if (options.contains(c)) c];
+    final pk = PromotionPicker(
+      from: from,
+      to: to,
+      owner: _me,
+      options: ordered,
+      pieceFactory: pieceFactory,
+      screen: size,
+    );
+    picker = pk;
+    add(pk);
+    onSelect?.call(to);
+  }
+
+  void _closePicker() {
+    picker?.removeFromParent();
+    picker = null;
   }
 
   void _clearSelection() {

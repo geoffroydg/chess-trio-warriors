@@ -4,9 +4,10 @@ import 'package:chesstrio/models/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Map<String, dynamic> _state({int ply = 1, List<bool> active = const [true, true, true]}) => {
-      'version': 1,
+      'version': 2,
       'mode': 'firstMate',
-      'board': List.generate(96, (i) => i == 4 ? {'type': 'K', 'owner': 0} : null),
+      'board': List.generate(144, (i) => i == 4 ? {'type': 'K', 'owner': 0} : null),
+      'hilts': [false, true, false],
       'turn': 1,
       'active': active,
       'ply': ply,
@@ -54,7 +55,10 @@ void main() {
         'move': {'from': '0e2', 'to': '1d4'},
         'piece': 'N',
         'captured': {'type': 'P', 'owner': 1, 'frozen': false, 'at': '1d4'},
-        'promotion': null,
+        'promotion': 'N',
+        'crossedCenter': true,
+        'kingCaptured': 2,
+        'hiltsOpened': [1],
         'castle': null,
         'checks': [
           {'player': 1, 'by': [0]}
@@ -67,7 +71,8 @@ void main() {
       },
       'turn': 1,
       'legalMoves': [
-        {'from': '1e2', 'to': '1e4'}
+        {'from': '1e2', 'to': '1e4'},
+        {'from': '1b2', 'to': '1b1', 'promotion': 'R'},
       ],
       'turnDeadline': 1767225600000,
       'over': false,
@@ -76,7 +81,10 @@ void main() {
     })) as GameMsg;
     expect(m.turn, 1);
     expect(m.turnDeadline, 1767225600000);
-    expect(m.legalMoves.single.to, '1e4');
+    expect(m.legalMoves.first.to, '1e4');
+    expect(m.legalMoves.first.promotion, isNull);
+    expect(m.legalMoves.last.promotion, 'R');
+    expect(m.state.hilts, [false, true, false]);
     expect(m.state.board[4]!.type, PieceType.king);
     final e = m.lastEvent!;
     expect(e.auto, isTrue);
@@ -84,6 +92,11 @@ void main() {
     expect(e.captured!.type, PieceType.pawn);
     expect(e.captured!.at, '1d4');
     expect(e.checks.single.by, [0]);
+    expect(e.promotion, isTrue);
+    expect(e.promotionType, 'N');
+    expect(e.crossedCenter, isTrue);
+    expect(e.kingCaptured, 2);
+    expect(e.hiltsOpened, [1]);
   });
 
   test('parse fin de partie, erreur, pong, invalide', () {
@@ -110,8 +123,8 @@ void main() {
 
   test('index de case et classement', () {
     expect(cellIndex('0a1'), 0);
-    expect(cellIndex('1e2'), 32 + 8 + 4);
-    expect(cellIndex('2h4'), 95);
+    expect(cellIndex('1e2'), 48 + 8 + 4);
+    expect(cellIndex('2h6'), 143);
 
     final s = GameState.fromJson(_state(active: [true, true, false]));
     final r = computeRanking(s, const GameResult(winner: 1, reason: 'mate'));

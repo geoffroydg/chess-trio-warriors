@@ -54,8 +54,8 @@ class _GameViewState extends State<_GameView> {
     _game = ChessGame(
       geometry: widget.geometry,
       viewer: _app.me,
-      onMove: (from, to) {
-        if (!_app.sendMove(from, to)) {
+      onMove: (from, to, promotion) {
+        if (!_app.sendMove(from, to, promotion)) {
           _app.toast('Connexion perdue, réessaie dans un instant.');
         }
       },
