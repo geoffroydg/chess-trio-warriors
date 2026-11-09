@@ -1,11 +1,11 @@
 Textures d'effets de Chess Trio Warriors (toutes CC0)
-Source : génération procédurale (scripts/assets/fetch_assets.py)
+Source : Kenney « Particle Pack » (CC0, www.kenney.nl) - https://opengameart.org/sites/default/files/kenney_particlePack.zip
 
-glow.png : généré (procédural, numpy)
-smoke_a.png : généré (procédural, numpy)
-smoke_b.png : généré (procédural, numpy)
-spark.png : généré (procédural, numpy)
-star.png : généré (procédural, numpy)
-trace.png : généré (procédural, numpy)
-flare.png : généré (procédural, numpy)
-flame.png : généré (procédural, numpy)
+glow.png : circle_05.png
+smoke_a.png : smoke_04.png
+smoke_b.png : smoke_07.png
+spark.png : spark_05.png
+star.png : star_06.png
+trace.png : trace_01.png
+flare.png : flare_01.png
+flame.png : fire_01.png
